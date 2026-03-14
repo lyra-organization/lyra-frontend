@@ -8,8 +8,10 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  Alert,
 } from 'react-native';
 import { router } from 'expo-router';
+import { supabase } from '../../lib/supabase';
 
 const GENDER_OPTIONS = ['Male', 'Female', 'Non-binary', 'Other'];
 const ORIENTATION_OPTIONS = ['Everyone', 'Men', 'Women'];
@@ -19,8 +21,37 @@ export default function SignupScreen() {
   const [age, setAge] = useState('');
   const [gender, setGender] = useState('');
   const [orientation, setOrientation] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const canContinue = name.trim() && age && gender && orientation;
+
+  const handleConfirm = async () => {
+    if (!canContinue || saving) return;
+    setSaving(true);
+
+    try {
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      if (!authUser) throw new Error('Not authenticated');
+
+      const { error } = await supabase
+        .from('users')
+        .update({
+          name: name.trim(),
+          age: parseInt(age, 10),
+          gender,
+          show_me: orientation,
+        })
+        .eq('auth_id', authUser.id);
+
+      if (error) throw error;
+
+      router.replace('/(app)/onboarding');
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to save profile');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <KeyboardAvoidingView
@@ -96,11 +127,11 @@ export default function SignupScreen() {
         </View>
 
         <TouchableOpacity
-          style={[styles.confirmButton, !canContinue && styles.buttonDisabled]}
-          onPress={() => router.replace('/(app)/home')}
-          disabled={!canContinue}
+          style={[styles.confirmButton, (!canContinue || saving) && styles.buttonDisabled]}
+          onPress={handleConfirm}
+          disabled={!canContinue || saving}
         >
-          <Text style={styles.confirmText}>Confirm</Text>
+          <Text style={styles.confirmText}>{saving ? 'Saving...' : 'Confirm'}</Text>
         </TouchableOpacity>
       </ScrollView>
     </KeyboardAvoidingView>

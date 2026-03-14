@@ -9,7 +9,10 @@ import Svg, {
   Line,
 } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
-import { router } from 'expo-router';
+import * as Location from 'expo-location';
+import { router, useLocalSearchParams } from 'expo-router';
+import { joinRadarChannel, haversineDistance } from '../../../lib/radar';
+import { useSmoothedDistance } from '../../../hooks/useSmoothedDistance';
 
 const { width, height } = Dimensions.get('window');
 const RADAR_SIZE = width - 80;
@@ -20,7 +23,9 @@ const GREEN = '#22C55E';
 const CONFETTI_COLORS = ['#FF00DD', '#22C55E', '#F59E0B', '#4466FF', '#FFFFFF', '#FF4D8D'];
 const CONFETTI_COUNT = 60;
 
-// Lightweight confetti particle component
+// Demo mode flag — falls back to simulation if no match ID
+const isDemoId = (id: string) => id.startsWith('demo-');
+
 function ConfettiParticle({ delay, color, startX }: { delay: number; color: string; startX: number }) {
   const translateY = useRef(new Animated.Value(0)).current;
   const translateX = useRef(new Animated.Value(0)).current;
@@ -87,10 +92,13 @@ function ConfettiOverlay() {
 }
 
 export default function RadarScreen() {
+  const { id } = useLocalSearchParams<{ id: string }>();
   const [distance, setDistance] = useState(88);
-  const [bearing, setBearing] = useState(0); // degrees, 0 = up
+  const [bearing, setBearing] = useState(0);
   const [celebration, setCelebration] = useState(false);
   const startTime = useRef(Date.now());
+  const myLocation = useRef<{ lat: number; lon: number } | null>(null);
+  const { push: smoothDistance } = useSmoothedDistance(5);
 
   // Pulse ring animation
   const pulseScale = useRef(new Animated.Value(0.2)).current;
@@ -113,7 +121,7 @@ export default function RadarScreen() {
     ).start();
   }, [pulseScale, pulseOpacity]);
 
-  // Arrow glow loop — throbs faster as distance decreases
+  // Arrow glow loop
   useEffect(() => {
     const duration = distance > 40 ? 1200 : distance > 15 ? 600 : 300;
     const anim = Animated.loop(
@@ -126,69 +134,109 @@ export default function RadarScreen() {
     return () => anim.stop();
   }, [distance, arrowGlow]);
 
-  // Simulate distance decreasing + bearing wandering
+  // Real radar via Broadcast channel, or demo simulation
   useEffect(() => {
-    const interval = setInterval(() => {
-      const elapsed = Date.now() - startTime.current;
-      const progress = Math.min(elapsed / 25000, 1);
-      const newDist = 88 * (1 - progress);
-      setDistance(Math.max(0, newDist));
+    if (isDemoId(id || '')) {
+      // Demo mode — simulate distance decreasing
+      const interval = setInterval(() => {
+        const elapsed = Date.now() - startTime.current;
+        const progress = Math.min(elapsed / 25000, 1);
+        const newDist = 88 * (1 - progress);
+        setDistance(Math.max(0, newDist));
 
-      // Bearing wanders slightly to feel alive
-      setBearing((prev) => {
-        const drift = (Math.random() - 0.5) * 8;
-        return (prev + drift + 360) % 360;
-      });
+        setBearing((prev) => {
+          const drift = (Math.random() - 0.5) * 8;
+          return (prev + drift + 360) % 360;
+        });
 
-      if (newDist < 3 && !celebration) {
-        setCelebration(true);
-        clearInterval(interval);
+        if (newDist < 3 && !celebration) {
+          triggerCelebration();
+          clearInterval(interval);
+        }
+      }, 200);
 
-        // Haptic burst
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        setTimeout(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy), 200);
-        setTimeout(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy), 400);
+      return () => clearInterval(interval);
+    }
 
-        Animated.parallel([
-          Animated.spring(celebScale, { toValue: 1, useNativeDriver: true }),
-          Animated.timing(celebOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
-        ]).start();
+    // Real mode — GPS + Broadcast channel
+    const radar = joinRadarChannel(id!, (peerLat, peerLon) => {
+      if (!myLocation.current) return;
+
+      const rawDist = haversineDistance(
+        myLocation.current.lat, myLocation.current.lon,
+        peerLat, peerLon,
+      );
+      const smoothed = smoothDistance(rawDist);
+      setDistance(smoothed);
+
+      // Calculate bearing to peer
+      const dLon = ((peerLon - myLocation.current.lon) * Math.PI) / 180;
+      const lat1 = (myLocation.current.lat * Math.PI) / 180;
+      const lat2 = (peerLat * Math.PI) / 180;
+      const y = Math.sin(dLon) * Math.cos(lat2);
+      const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
+      const bearingDeg = ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
+      setBearing(bearingDeg);
+
+      if (smoothed < 3 && !celebration) {
+        triggerCelebration();
       }
-    }, 200);
+    });
 
-    return () => clearInterval(interval);
-  }, [celebration, celebScale, celebOpacity]);
+    // Send own location every 2 seconds
+    const locationInterval = setInterval(async () => {
+      try {
+        const loc = await Location.getCurrentPositionAsync({
+          accuracy: Location.Accuracy.High,
+        });
+        myLocation.current = { lat: loc.coords.latitude, lon: loc.coords.longitude };
+        radar.sendLocation(loc.coords.latitude, loc.coords.longitude);
+      } catch {
+        // GPS may not be available
+      }
+    }, 2000);
+
+    return () => {
+      clearInterval(locationInterval);
+      radar.leave();
+    };
+  }, [id, celebration]);
+
+  const triggerCelebration = () => {
+    setCelebration(true);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    setTimeout(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy), 200);
+    setTimeout(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy), 400);
+
+    Animated.parallel([
+      Animated.spring(celebScale, { toValue: 1, useNativeDriver: true }),
+      Animated.timing(celebOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
+    ]).start();
+  };
 
   const dotDist = (distance / 100) * MAX_R * 0.75;
   const bearingRad = (bearing * Math.PI) / 180;
   const dotX = CENTER + Math.sin(bearingRad) * dotDist;
   const dotY = CENTER - Math.cos(bearingRad) * dotDist;
 
-  // Arrow points — triangle pointing at bearing direction
   const arrowLen = 50;
   const arrowWidth = 18;
-  const arrowDist = 55; // distance from center
+  const arrowDist = 55;
   const ax = CENTER + Math.sin(bearingRad) * arrowDist;
   const ay = CENTER - Math.cos(bearingRad) * arrowDist;
-  // Tip
   const tipX = ax + Math.sin(bearingRad) * arrowLen;
   const tipY = ay - Math.cos(bearingRad) * arrowLen;
-  // Left base
   const leftRad = bearingRad - Math.PI / 2;
   const lx = ax + Math.sin(leftRad) * arrowWidth / 2;
   const ly = ay - Math.cos(leftRad) * arrowWidth / 2;
-  // Right base
   const rx = ax - Math.sin(leftRad) * arrowWidth / 2;
   const ry = ay + Math.cos(leftRad) * arrowWidth / 2;
 
   const distText = distance < 1 ? '< 1m' : `${Math.round(distance)}m`;
-
-  // Color shifts closer
   const color = distance > 40 ? GREEN : distance > 15 ? '#F59E0B' : '#FF00DD';
 
   return (
     <View style={styles.container}>
-      {/* Celebration */}
       {celebration && (
         <>
           <Animated.View
@@ -196,18 +244,15 @@ export default function RadarScreen() {
           >
             <Text style={styles.celebEmoji}>✨</Text>
             <Text style={styles.celebTitle}>You Found Each Other!</Text>
-            <Text style={styles.celebSub}>Say hi to Sam!</Text>
+            <Text style={styles.celebSub}>Say hi!</Text>
           </Animated.View>
           <ConfettiOverlay />
         </>
       )}
 
-      {/* Header */}
-      <Text style={styles.headerText}>Walking to Sam</Text>
+      <Text style={styles.headerText}>Walking to your match</Text>
 
-      {/* Radar */}
       <View style={styles.radarOuter}>
-        {/* Pulse ring */}
         <Animated.View
           style={[
             styles.pulseRing,
@@ -220,7 +265,6 @@ export default function RadarScreen() {
         />
 
         <Svg width={RADAR_SIZE} height={RADAR_SIZE} viewBox={`0 0 ${RADAR_SIZE} ${RADAR_SIZE}`}>
-          {/* Grid rings */}
           {[0.25, 0.5, 0.75, 1.0].map((s) => (
             <Circle
               key={s}
@@ -234,11 +278,9 @@ export default function RadarScreen() {
             />
           ))}
 
-          {/* Crosshairs */}
           <Line x1={CENTER} y1={12} x2={CENTER} y2={RADAR_SIZE - 12} stroke={color} strokeOpacity={0.06} strokeWidth={1} />
           <Line x1={12} y1={CENTER} x2={RADAR_SIZE - 12} y2={CENTER} stroke={color} strokeOpacity={0.06} strokeWidth={1} />
 
-          {/* Center glow */}
           <Defs>
             <RadialGradient id="centerGlow" cx="50%" cy="50%" rx="15%" ry="15%">
               <Stop offset="0%" stopColor={color} stopOpacity="0.3" />
@@ -246,11 +288,8 @@ export default function RadarScreen() {
             </RadialGradient>
           </Defs>
           <Circle cx={CENTER} cy={CENTER} r={MAX_R * 0.15} fill="url(#centerGlow)" />
-
-          {/* Center dot (you) */}
           <Circle cx={CENTER} cy={CENTER} r={5} fill={color} />
 
-          {/* Direction arrow — compass pointing to match */}
           {distance > 3 && (
             <Polygon
               points={`${tipX},${tipY} ${lx},${ly} ${rx},${ry}`}
@@ -259,7 +298,6 @@ export default function RadarScreen() {
             />
           )}
 
-          {/* Target dot */}
           {distance > 3 && (
             <>
               <Circle cx={dotX} cy={dotY} r={10} fill={color} fillOpacity={0.15} />
@@ -269,12 +307,10 @@ export default function RadarScreen() {
         </Svg>
       </View>
 
-      {/* Distance */}
       <Animated.Text style={[styles.distance, { color, opacity: arrowGlow }]}>
         {distText}
       </Animated.Text>
 
-      {/* Hint */}
       <Text style={[styles.hint, { color }]}>
         {distance > 40
           ? 'Follow the arrow'

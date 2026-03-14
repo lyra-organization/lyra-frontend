@@ -9,6 +9,9 @@ import {
 } from 'react-native';
 import Svg, { Defs, RadialGradient, Stop, Circle, Ellipse } from 'react-native-svg';
 import { router } from 'expo-router';
+import { supabase } from '../../lib/supabase';
+import { startLocationTracking } from '../../lib/location';
+import { registerForPushNotifications, setupNotificationResponseListener } from '../../lib/notifications';
 
 const { width } = Dimensions.get('window');
 const ORB_SIZE = 220;
@@ -37,6 +40,56 @@ export default function HomeScreen() {
     ).start();
   }, [orbScale, orbGlowScale]);
 
+  // Start location tracking and push notifications
+  useEffect(() => {
+    startLocationTracking();
+    registerForPushNotifications();
+    const cleanup = setupNotificationResponseListener();
+    return cleanup;
+  }, []);
+
+  // Listen for new matches in real-time
+  useEffect(() => {
+    let userId: string | null = null;
+
+    const setup = async () => {
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      if (!authUser) return;
+
+      const { data: userData } = await supabase
+        .from('users')
+        .select('id')
+        .eq('auth_id', authUser.id)
+        .single();
+
+      if (!userData) return;
+      userId = userData.id;
+
+      // Subscribe to new matches where this user is user_b
+      const channel = supabase
+        .channel('matches-realtime')
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'matches',
+            filter: `user_b=eq.${userId}`,
+          },
+          (payload) => {
+            router.push(`/(app)/match/${payload.new.id}`);
+          },
+        )
+        .subscribe();
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    };
+
+    setup();
+  }, []);
+
   const handleTap = () => {
     tapCount.current += 1;
     if (tapTimer.current) clearTimeout(tapTimer.current);
@@ -54,7 +107,7 @@ export default function HomeScreen() {
   return (
     <TouchableWithoutFeedback onPress={handleTap}>
       <View style={styles.container}>
-        {/* Blue orb — same structure as onboarding but blue */}
+        {/* Blue orb */}
         <View style={styles.orbWrapper}>
           <Animated.View
             style={[

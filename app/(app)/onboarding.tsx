@@ -6,6 +6,7 @@ import {
   StyleSheet,
   Dimensions,
   Animated,
+  Alert,
 } from 'react-native';
 import Svg, {
   Defs,
@@ -18,28 +19,23 @@ import Svg, {
   Path,
 } from 'react-native-svg';
 import { router } from 'expo-router';
+import { streamInterview, Message } from '../../lib/interview';
+import { containsProfile, parseProfile, LyraProfile } from '../../lib/profileParser';
+import { saveProfile } from '../../lib/embedding';
+import { supabase } from '../../lib/supabase';
 
 const { width } = Dimensions.get('window');
 const ORB_SIZE = 220;
 
-const QUESTIONS = [
-  "Hey, I'm Lyra. I'd like to ask some questions about you. Are you ready?",
-  "What's your name, age, and gender?",
-  "What do you do for fun when no one's watching?",
-  "What's something you're weirdly passionate about?",
-  "Describe your ideal Friday night.",
-  "What's a dealbreaker for you in a relationship?",
-  "What kind of humor do you vibe with?",
-  "How do you show someone you care about them?",
-  "Last one — what are you actually looking for right now?",
-];
-
 export default function OnboardingScreen() {
-  const [questionIndex, setQuestionIndex] = useState(0);
   const [speaking, setSpeaking] = useState(false);
   const [done, setDone] = useState(false);
+  const [displayText, setDisplayText] = useState('');
+  const [profile, setProfile] = useState<LyraProfile | null>(null);
+  const [saving, setSaving] = useState(false);
+  const messagesRef = useRef<Message[]>([]);
 
-  // Text fade — slides in from top (translateY -20 → 0) and fades in
+  // Text fade
   const textOpacity = useRef(new Animated.Value(0)).current;
   const textTranslateY = useRef(new Animated.Value(-20)).current;
 
@@ -84,73 +80,111 @@ export default function OnboardingScreen() {
 
   useEffect(() => { startIdle(); }, [startIdle]);
 
-  // Animate text in when question changes
-  const showQuestion = useCallback(() => {
-    setSpeaking(true);
+  const animateTextIn = useCallback(() => {
     textOpacity.setValue(0);
     textTranslateY.setValue(-20);
-
     Animated.parallel([
       Animated.timing(textOpacity, { toValue: 1, duration: 500, useNativeDriver: true }),
       Animated.timing(textTranslateY, { toValue: 0, duration: 500, useNativeDriver: true }),
     ]).start();
+  }, [textOpacity, textTranslateY]);
 
-    // Simulate speaking duration based on text length
-    const duration = Math.max(1500, QUESTIONS[questionIndex]?.length * 40 || 2000);
+  const animateTextOut = useCallback(() => {
+    return new Promise<void>((resolve) => {
+      Animated.parallel([
+        Animated.timing(textOpacity, { toValue: 0, duration: 250, useNativeDriver: true }),
+        Animated.timing(textTranslateY, { toValue: 20, duration: 250, useNativeDriver: true }),
+      ]).start(() => resolve());
+    });
+  }, [textOpacity, textTranslateY]);
+
+  // Send a message to the interview and stream the response
+  const sendMessage = useCallback(async (userMessage?: string) => {
+    if (userMessage) {
+      messagesRef.current.push({ role: 'user', content: userMessage });
+    }
+
+    setSpeaking(true);
     startSpeaking();
+    setDisplayText('');
+    animateTextIn();
 
-    setTimeout(() => {
+    let fullResponse = '';
+
+    try {
+      fullResponse = await streamInterview(
+        messagesRef.current,
+        (chunk) => {
+          // Strip <profile> tags from display text
+          setDisplayText((prev) => {
+            const updated = prev + chunk;
+            const cleaned = updated.replace(/<profile>[\s\S]*$/, '').trim();
+            return cleaned;
+          });
+        },
+      );
+
+      messagesRef.current.push({ role: 'assistant', content: fullResponse });
+
+      // Check if interview is complete
+      if (containsProfile(fullResponse)) {
+        const parsed = parseProfile(fullResponse);
+        if (parsed) {
+          setProfile(parsed);
+          setDone(true);
+          // Show the summary instead of the raw text
+          setDisplayText(parsed.summary);
+        }
+      }
+    } catch (err: any) {
+      setDisplayText('Something went wrong. Tap to try again.');
+    } finally {
       setSpeaking(false);
       startIdle();
-    }, duration);
-  }, [questionIndex, textOpacity, textTranslateY, startSpeaking, startIdle]);
+    }
+  }, [startSpeaking, startIdle, animateTextIn]);
 
-  // Show first question on mount
-  useEffect(() => { showQuestion(); }, []);
+  // Start the interview on mount
+  useEffect(() => {
+    sendMessage();
+  }, []);
 
-  const handleMicPress = () => {
+  const handleMicPress = async () => {
     if (speaking) return;
 
-    // Fade out current text
-    Animated.parallel([
-      Animated.timing(textOpacity, { toValue: 0, duration: 250, useNativeDriver: true }),
-      Animated.timing(textTranslateY, { toValue: 20, duration: 250, useNativeDriver: true }),
-    ]).start(() => {
-      const nextIndex = questionIndex + 1;
-      setQuestionIndex(nextIndex);
+    await animateTextOut();
 
-      if (nextIndex < QUESTIONS.length) {
-        // Show next question (fade in from top)
-        textTranslateY.setValue(-20);
-        setSpeaking(true);
-        startSpeaking();
-
-        const duration = Math.max(1500, QUESTIONS[nextIndex].length * 40);
-
-        Animated.parallel([
-          Animated.timing(textOpacity, { toValue: 1, duration: 500, useNativeDriver: true }),
-          Animated.timing(textTranslateY, { toValue: 0, duration: 500, useNativeDriver: true }),
-        ]).start();
-
-        setTimeout(() => {
-          setSpeaking(false);
-          startIdle();
-        }, duration);
-      } else {
-        // Done
-        setDone(true);
-        textTranslateY.setValue(-20);
-        Animated.parallel([
-          Animated.timing(textOpacity, { toValue: 1, duration: 500, useNativeDriver: true }),
-          Animated.timing(textTranslateY, { toValue: 0, duration: 500, useNativeDriver: true }),
-        ]).start();
-      }
-    });
+    // For now, send a placeholder user response (will be replaced with real voice input)
+    // The mic tap simulates the user responding — in production this will be voice-to-text
+    sendMessage('Next question please.');
   };
 
-  const currentText = done
-    ? "That's everything. I've built your personality profile."
-    : QUESTIONS[questionIndex] || '';
+  const handleThatsMe = async () => {
+    if (!profile || saving) return;
+    setSaving(true);
+
+    try {
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      if (!authUser) throw new Error('Not authenticated');
+
+      // Get the user's internal ID
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select('id')
+        .eq('auth_id', authUser.id)
+        .single();
+
+      if (userError || !userData) throw userError || new Error('User not found');
+
+      await saveProfile(userData.id, profile, messagesRef.current);
+
+      router.replace('/(app)/home');
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to save profile');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <View style={styles.container}>
@@ -197,7 +231,7 @@ export default function OnboardingScreen() {
         </Animated.View>
       </View>
 
-      {/* Text area — fixed height, current question only, faded edges */}
+      {/* Text area */}
       <View style={styles.textArea}>
         <Animated.Text
           style={[
@@ -208,7 +242,7 @@ export default function OnboardingScreen() {
             },
           ]}
         >
-          {currentText}
+          {displayText}
         </Animated.Text>
 
         {/* Top fade overlay */}
@@ -238,14 +272,17 @@ export default function OnboardingScreen() {
         </View>
       </View>
 
-      {/* Bottom — mic or continue */}
+      {/* Bottom — mic, "That's me!", or continue */}
       <View style={styles.bottomArea}>
         {done ? (
           <TouchableOpacity
-            style={styles.continueButton}
-            onPress={() => router.push('/(auth)/login')}
+            style={[styles.continueButton, saving && { opacity: 0.5 }]}
+            onPress={handleThatsMe}
+            disabled={saving}
           >
-            <Text style={styles.continueText}>Continue</Text>
+            <Text style={styles.continueText}>
+              {saving ? 'Saving...' : "That's me!"}
+            </Text>
           </TouchableOpacity>
         ) : (
           <TouchableOpacity
@@ -285,7 +322,7 @@ const styles = StyleSheet.create({
     marginTop: 70,
   },
 
-  // Orb — takes up the center of the screen
+  // Orb
   orbArea: {
     flex: 1,
     alignItems: 'center',
@@ -302,7 +339,7 @@ const styles = StyleSheet.create({
     height: ORB_SIZE,
   },
 
-  // Text — fixed height below orb
+  // Text
   textArea: {
     height: 90,
     width: width,

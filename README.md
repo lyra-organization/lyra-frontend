@@ -5,26 +5,54 @@ Proximity-based dating app. No swiping — an AI interviews users to build perso
 ## User Flow
 
 ```
-Onboarding (AI Interview) → Login → Profile Setup → Home → Match Profile → Proximity Radar
+Login (Apple Sign-In) → Profile Setup → Onboarding (AI Interview) → Home → Match Profile → Proximity Radar
 ```
 
-1. **Onboarding** — Animated glowing orb (Lyra) asks 8 personality questions via voice-style UI. Text fades in/out like a teleprompter. Mic button to advance.
-2. **Login** — "Personality Saved." → Continue with Apple
-3. **Profile Setup** — Photo slots (4 vertical rectangles), name, age, gender, "Want to meet" preferences
-4. **Home** — Blue breathing orb, "Looking for someone compatible near you". Tap 5x anywhere for demo mode.
+1. **Login** — "Lyra / Find your person" → Continue with Apple (real Apple Sign-In via Supabase Auth)
+2. **Profile Setup** — Photo slots, name, age, gender, "Want to meet" preferences → saved to `users` table
+3. **Onboarding** — Animated glowing orb (Lyra) streams AI interview via `/interview` edge function. Detects `<profile>` tag when done, saves profile + personality embedding to `profiles` table
+4. **Home** — Blue breathing orb, "Looking for someone compatible near you". Background GPS tracking starts, push notifications registered. Real-time match listener active. Tap 5x for demo mode.
 5. **Match Profile** — Circular photo, bio, Lyra's match reasoning. Pink/gray edge gradients that glow on button hold. "Let's not" / "Let's meet!"
-6. **Proximity Radar** — Compass arrow pointing to match, color shifts (green → amber → pink), pulsing distance text, confetti + haptics on arrival
+6. **Proximity Radar** — Real GPS via Supabase Broadcast channel, Haversine distance, bearing calculation. Falls back to demo simulation for demo IDs. Confetti + haptics on arrival.
 
 ## Screens
 
 | Screen | Route | Description |
 |--------|-------|-------------|
-| Onboarding | `/(app)/onboarding` | 8-question AI interview with animated orb (entry point) |
-| Login | `/(auth)/login` | "Personality Saved." + Apple Sign-In |
-| Profile Setup | `/(app)/signup` | Photos, name, age, gender, orientation |
-| Home | `/(app)/home` | Blue orb waiting screen + 5-tap demo trigger |
+| Login | `/(auth)/login` | Apple Sign-In → creates auth session + `users` row |
+| Profile Setup | `/(app)/signup` | Name, age, gender, orientation → saved to `users` table |
+| Onboarding | `/(app)/onboarding` | AI interview with streaming SSE, profile parsing, embedding |
+| Home | `/(app)/home` | Blue orb + GPS tracking + push registration + match listener |
 | Match Profile | `/(app)/match/[id]` | Profile reveal with interactive edge gradients |
-| Proximity Radar | `/(app)/radar/[id]` | Compass radar, distance countdown, confetti celebration |
+| Proximity Radar | `/(app)/radar/[id]` | Live GPS radar via Broadcast channel, or demo simulation |
+
+## Backend Integration Status
+
+### Connected
+- **Supabase client** (`lib/supabase.ts`) — SecureStore for token persistence
+- **Apple Sign-In** (`login.tsx`) — `signInWithIdToken` → creates `users` row
+- **Profile data** (`signup.tsx`) — Saves name/age/gender/show_me to `users` table
+- **AI Interview** (`lib/interview.ts`) — Streams from `/interview` edge function, handles SSE chunks
+- **Profile parsing** (`lib/profileParser.ts`) — Detects `<profile>` tag, extracts structured JSON
+- **Personality embedding** (`lib/embedding.ts`) — Calls `/embed`, stores profile + 512-dim vector in `profiles` table
+- **Background GPS** (`lib/location.ts`) — `expo-location` + `expo-task-manager`, writes to `locations` table
+- **Push notifications** (`lib/notifications.ts`) — Registers Expo push token, stores in `users`, handles tap navigation
+- **Live radar** (`lib/radar.ts`) — Supabase Broadcast channel, Haversine distance, bearing calculation
+- **Distance smoothing** (`hooks/useSmoothedDistance.ts`) — Moving average filter
+
+### Waiting on Backend Deployment
+The edge functions exist in [lyra-backend](https://github.com/lyra-organization/lyra-backend) but need to be deployed:
+
+```bash
+npx supabase link --project-ref lxopklbgmlmterrakgmk
+npx supabase db push
+npx supabase secrets set ANTHROPIC_API_KEY=sk-ant-... OPENAI_API_KEY=sk-...
+npx supabase functions deploy
+```
+
+Also needed:
+- Enable **PostGIS** and **pgvector** extensions (Database → Extensions)
+- Create DB webhook: table `matches`, event INSERT → function `send-push`
 
 ## Demo Mode
 
@@ -38,48 +66,60 @@ From the home screen, **tap anywhere 5 times** to trigger demo mode:
 
 - Expo SDK 55 + TypeScript
 - expo-router v5 (file-based routing)
+- Supabase (auth, database, edge functions, realtime)
 - React Native SVG (radar, orb gradients, compass arrow, edge gradients)
 - React Native Animated API (orb breathing, confetti particles, text transitions)
+- expo-location + expo-task-manager (background GPS)
+- expo-notifications (push notifications)
+- expo-apple-authentication + expo-crypto (Apple Sign-In)
+- expo-secure-store (token persistence)
 - expo-haptics (celebration vibration)
 
-## Getting Started
+## Setup
 
 ```bash
+# Install dependencies
 npm install
-npx expo prebuild --platform ios
-npx expo run:ios
+
+# Create .env from template
+cp .env.example .env
+# Fill in your Supabase URL and anon key
+
+# Run in Expo Go
+npx expo start --ios
+```
+
+## Environment Variables
+
+```
+EXPO_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+EXPO_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
 ```
 
 ## Project Structure
 
 ```
 app/
-├── _layout.tsx              # Root layout
-├── index.tsx                # Entry → redirects to onboarding
+├── _layout.tsx              # Root layout with auth state listener
+├── index.tsx                # Entry → redirects based on auth state
 ├── (auth)/
 │   ├── _layout.tsx
-│   └── login.tsx            # "Personality Saved." + Apple Sign-In
+│   └── login.tsx            # Apple Sign-In
 ├── (app)/
 │   ├── _layout.tsx
-│   ├── onboarding.tsx       # Orb + teleprompter interview
-│   ├── signup.tsx           # Profile setup (photos, name, age, gender)
-│   ├── home.tsx             # Blue orb waiting screen
+│   ├── onboarding.tsx       # AI interview with streaming
+│   ├── signup.tsx           # Profile setup → saves to users table
+│   ├── home.tsx             # Blue orb + GPS + push + match listener
 │   ├── match/[id].tsx       # Match profile with edge gradients
-│   └── radar/[id].tsx       # Compass radar + confetti celebration
+│   └── radar/[id].tsx       # Live GPS radar or demo simulation
+lib/
+├── supabase.ts              # Supabase client with SecureStore
+├── interview.ts             # SSE streaming from /interview edge function
+├── profileParser.ts         # <profile> tag detection + JSON parsing
+├── embedding.ts             # /embed call + profiles table write
+├── location.ts              # Background GPS tracking
+├── notifications.ts         # Push notification registration
+└── radar.ts                 # Broadcast channel + Haversine distance
+hooks/
+└── useSmoothedDistance.ts    # Moving average for radar distance
 ```
-
-## Backend Integration (TODO)
-
-This frontend is designed to connect to a Supabase backend. The following will be added once the backend team delivers:
-
-- **Supabase Auth** — Apple Sign-In via `signInWithIdToken`
-- **Supabase Realtime** — match notifications + live location sharing
-- **Edge Functions** — `/interview` (Claude Haiku streaming), `/embed` (personality embedding)
-- **Background Location** — `expo-location` + `expo-task-manager`
-- **Push Notifications** — `expo-notifications`
-
-### Supabase Tables Needed
-- `profiles` — id, name, age, gender, orientation, photos, personality_summary, embedding, push_token
-- `matches` — id, user_a, user_b, status, created_at (Realtime enabled)
-- `locations` — user_id, latitude, longitude, updated_at (Realtime enabled)
-- `avatars` storage bucket

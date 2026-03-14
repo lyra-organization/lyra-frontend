@@ -1,20 +1,94 @@
-import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, Alert, Platform } from 'react-native';
 import { router } from 'expo-router';
+import * as AppleAuthentication from 'expo-apple-authentication';
+import * as Crypto from 'expo-crypto';
+import { supabase } from '../../lib/supabase';
 
 export default function LoginScreen() {
+  const [loading, setLoading] = useState(false);
+
+  const handleAppleSignIn = async () => {
+    if (loading) return;
+    setLoading(true);
+
+    try {
+      // Generate nonce for security
+      const rawNonce = Crypto.randomUUID();
+      const hashedNonce = await Crypto.digestStringAsync(
+        Crypto.CryptoDigestAlgorithm.SHA256,
+        rawNonce,
+      );
+
+      // Apple Sign-In
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+        nonce: hashedNonce,
+      });
+
+      if (!credential.identityToken) {
+        throw new Error('No identity token received from Apple');
+      }
+
+      // Sign in with Supabase using Apple's identity token
+      const { data, error } = await supabase.auth.signInWithIdToken({
+        provider: 'apple',
+        token: credential.identityToken,
+        nonce: rawNonce,
+      });
+
+      if (error) throw error;
+
+      // Create or update user row in users table
+      const authUser = data.user;
+      const fullName = credential.fullName;
+      const displayName = fullName
+        ? [fullName.givenName, fullName.familyName].filter(Boolean).join(' ')
+        : undefined;
+
+      const { error: upsertError } = await supabase
+        .from('users')
+        .upsert(
+          {
+            auth_id: authUser.id,
+            name: displayName || 'User',
+          },
+          { onConflict: 'auth_id' },
+        );
+
+      if (upsertError) throw upsertError;
+
+      router.replace('/(app)/signup');
+    } catch (err: any) {
+      if (err.code === 'ERR_REQUEST_CANCELED') {
+        // User cancelled — do nothing
+      } else {
+        Alert.alert('Sign In Error', err.message || 'Something went wrong');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.content}>
-        <Text style={styles.saved}>Personality Saved.</Text>
+        <Text style={styles.title}>Lyra</Text>
+        <Text style={styles.subtitle}>Find your person</Text>
       </View>
 
       <View style={styles.bottom}>
         <TouchableOpacity
-          style={styles.appleButton}
-          onPress={() => router.replace('/(app)/signup')}
+          style={[styles.appleButton, loading && { opacity: 0.5 }]}
+          onPress={handleAppleSignIn}
+          disabled={loading}
         >
-          <Text style={styles.appleButtonText}> Continue with Apple</Text>
+          <Text style={styles.appleButtonText}>
+            {loading ? 'Signing in...' : ' Continue with Apple'}
+          </Text>
         </TouchableOpacity>
       </View>
     </View>
@@ -32,11 +106,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  saved: {
+  title: {
     color: '#FFFFFF',
-    fontSize: 24,
-    fontWeight: '600',
+    fontSize: 36,
+    fontWeight: '700',
     textAlign: 'center',
+    letterSpacing: -0.5,
+  },
+  subtitle: {
+    color: '#666666',
+    fontSize: 16,
+    textAlign: 'center',
+    marginTop: 8,
   },
   bottom: {
     paddingHorizontal: 24,
