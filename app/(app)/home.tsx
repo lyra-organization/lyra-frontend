@@ -48,9 +48,9 @@ export default function HomeScreen() {
     return cleanup;
   }, []);
 
-  // Listen for new matches in real-time
+  // Listen for matches in real-time
   useEffect(() => {
-    let userId: string | null = null;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
 
     const setup = async () => {
       const { data: { user: authUser } } = await supabase.auth.getUser();
@@ -63,31 +63,45 @@ export default function HomeScreen() {
         .single();
 
       if (!userData) return;
-      userId = userData.id;
 
-      // Subscribe to new matches where this user is user_b
-      const channel = supabase
+      channel = supabase
         .channel('matches-realtime')
+        // user_b: notified on new match (INSERT with status=pending)
         .on(
           'postgres_changes',
           {
             event: 'INSERT',
             schema: 'public',
             table: 'matches',
-            filter: `user_b=eq.${userId}`,
+            filter: `user_b=eq.${userData.id}`,
           },
           (payload) => {
             router.push(`/(app)/match/${payload.new.id}`);
           },
         )
+        // user_a: notified when user_b accepts (UPDATE to approved)
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'matches',
+            filter: `user_a=eq.${userData.id}`,
+          },
+          (payload) => {
+            if (payload.new.status === 'approved') {
+              router.push(`/(app)/match/${payload.new.id}`);
+            }
+          },
+        )
         .subscribe();
-
-      return () => {
-        supabase.removeChannel(channel);
-      };
     };
 
     setup();
+
+    return () => {
+      if (channel) supabase.removeChannel(channel);
+    };
   }, []);
 
   const handleTap = () => {

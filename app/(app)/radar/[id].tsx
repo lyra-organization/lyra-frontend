@@ -10,9 +10,10 @@ import Svg, {
 } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
 import * as Location from 'expo-location';
-import { router, useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { joinRadarChannel, haversineDistance } from '../../../lib/radar';
 import { useSmoothedDistance } from '../../../hooks/useSmoothedDistance';
+import { supabase } from '../../../lib/supabase';
 
 const { width, height } = Dimensions.get('window');
 const RADAR_SIZE = width - 80;
@@ -98,6 +99,7 @@ export default function RadarScreen() {
   const [celebration, setCelebration] = useState(false);
   const startTime = useRef(Date.now());
   const myLocation = useRef<{ lat: number; lon: number } | null>(null);
+  const celebrationRef = useRef(false);
   const { push: smoothDistance } = useSmoothedDistance(5);
 
   // Pulse ring animation
@@ -149,7 +151,7 @@ export default function RadarScreen() {
           return (prev + drift + 360) % 360;
         });
 
-        if (newDist < 3 && !celebration) {
+        if (newDist < 3 && !celebrationRef.current) {
           triggerCelebration();
           clearInterval(interval);
         }
@@ -178,7 +180,7 @@ export default function RadarScreen() {
       const bearingDeg = ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
       setBearing(bearingDeg);
 
-      if (smoothed < 3 && !celebration) {
+      if (smoothed < 3 && !celebrationRef.current) {
         triggerCelebration();
       }
     });
@@ -200,9 +202,10 @@ export default function RadarScreen() {
       clearInterval(locationInterval);
       radar.leave();
     };
-  }, [id, celebration]);
+  }, [id]);
 
-  const triggerCelebration = () => {
+  const triggerCelebration = async () => {
+    celebrationRef.current = true;
     setCelebration(true);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     setTimeout(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy), 200);
@@ -212,6 +215,28 @@ export default function RadarScreen() {
       Animated.spring(celebScale, { toValue: 1, useNativeDriver: true }),
       Animated.timing(celebOpacity, { toValue: 1, duration: 400, useNativeDriver: true }),
     ]).start();
+
+    // Mark the match as "met" — fire and forget
+    if (id && !isDemoId(id)) {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session) {
+          await fetch(
+            `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/respond-match`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session.access_token}`,
+              },
+              body: JSON.stringify({ matchId: id, action: 'met' }),
+            },
+          );
+        }
+      } catch {
+        // Non-critical — don't interrupt the celebration
+      }
+    }
   };
 
   const dotDist = (distance / 100) * MAX_R * 0.75;

@@ -26,33 +26,41 @@ Login (Apple Sign-In) → Profile Setup → Onboarding (AI Interview) → Home �
 | Match Profile | `/(app)/match/[id]` | Profile reveal with interactive edge gradients |
 | Proximity Radar | `/(app)/radar/[id]` | Live GPS radar via Broadcast channel, or demo simulation |
 
-## Backend Integration Status
+## How Matching Works
 
-### Connected
-- **Supabase client** (`lib/supabase.ts`) — SecureStore for token persistence
-- **Apple Sign-In** (`login.tsx`) — `signInWithIdToken` → creates `users` row
-- **Profile data** (`signup.tsx`) — Saves name/age/gender/show_me to `users` table
-- **AI Interview** (`lib/interview.ts`) — Streams from `/interview` edge function, handles SSE chunks
-- **Profile parsing** (`lib/profileParser.ts`) — Detects `<profile>` tag, extracts structured JSON
-- **Personality embedding** (`lib/embedding.ts`) — Calls `/embed`, stores profile + 512-dim vector in `profiles` table
-- **Background GPS** (`lib/location.ts`) — `expo-location` + `expo-task-manager`, writes to `locations` table
-- **Push notifications** (`lib/notifications.ts`) — Registers Expo push token, stores in `users`, handles tap navigation
-- **Live radar** (`lib/radar.ts`) — Supabase Broadcast channel, Haversine distance, bearing calculation
-- **Distance smoothing** (`hooks/useSmoothedDistance.ts`) — Moving average filter
+The match flow is **sequential** — both users must accept one at a time:
 
-### Waiting on Backend Deployment
-The edge functions exist in [lyra-backend](https://github.com/lyra-organization/lyra-backend) but need to be deployed:
+```
+Trigger creates match (status: pending)
+  → user_b gets push notification + realtime alert
+  → user_b sees profile, taps "Let's meet!" or "Let's not"
+     → calls /respond-match Edge Function
+     → if accept: status → approved, user_a gets notified
+     → if pass: status → rejected, done
 
-```bash
-npx supabase link --project-ref lxopklbgmlmterrakgmk
-npx supabase db push
-npx supabase secrets set ANTHROPIC_API_KEY=sk-ant-... OPENAI_API_KEY=sk-...
-npx supabase functions deploy
+  → user_a gets push notification + realtime alert
+  → user_a sees profile, taps "Let's meet!" or "Let's not"
+     → calls /respond-match Edge Function
+     → if accept: status → confirmed, both go to radar
+     → if pass: status → rejected, done
+
+  → Radar: both users walk toward each other
+  → At < 3m: celebration, status → met
 ```
 
-Also needed:
-- Enable **PostGIS** and **pgvector** extensions (Database → Extensions)
-- Create DB webhook: table `matches`, event INSERT → function `send-push`
+All match actions go through the `/respond-match` Edge Function (service role) — the frontend never writes directly to `matches` or `interactions`.
+
+## Backend Integration
+
+| Feature | Frontend file | Backend endpoint |
+|---------|--------------|-----------------|
+| Auth | `lib/supabase.ts`, `login.tsx` | Supabase Auth (Apple Sign-In) |
+| AI Interview | `lib/interview.ts` | `/interview` Edge Function (Claude) |
+| Profile save | `lib/embedding.ts` | `/embed` Edge Function (OpenAI + DB write) |
+| Match actions | `match/[id].tsx` | `/respond-match` Edge Function |
+| Background GPS | `lib/location.ts` | Direct write to `locations` table |
+| Push notifications | `lib/notifications.ts` | `/send-push` Edge Function (webhook) |
+| Live radar | `lib/radar.ts` | Supabase Broadcast channel |
 
 ## Demo Mode
 
@@ -116,7 +124,7 @@ lib/
 ├── supabase.ts              # Supabase client with SecureStore
 ├── interview.ts             # SSE streaming from /interview edge function
 ├── profileParser.ts         # <profile> tag detection + JSON parsing
-├── embedding.ts             # /embed call + profiles table write
+├── embedding.ts             # Calls /embed Edge Function (profile + vectors saved server-side)
 ├── location.ts              # Background GPS tracking
 ├── notifications.ts         # Push notification registration
 └── radar.ts                 # Broadcast channel + Haversine distance

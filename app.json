@@ -21,7 +21,23 @@
     },
     "plugins": [
       "expo-router",
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-apple-authentication",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Lyra needs your location to find compatible people nearby.",
+          "locationAlwaysPermission": "Lyra needs background location to notify you when someone compatible is near.",
+          "locationWhenInUsePermission": "Lyra needs your location to guide you toward your match.",
+          "isIosBackgroundLocationEnabled": true
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "sounds": []
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -7,6 +7,7 @@ import {
   Image,
   Animated,
   Pressable,
+  Alert,
 } from 'react-native';
 import Svg, {
   Defs,
@@ -15,6 +16,7 @@ import Svg, {
   Rect,
 } from 'react-native-svg';
 import { useLocalSearchParams, router } from 'expo-router';
+import { supabase } from '../../../lib/supabase';
 
 const { width, height } = Dimensions.get('window');
 
@@ -27,14 +29,75 @@ const DEMO_PROFILE = {
   photo: 'https://i.pravatar.cc/300?img=5',
 };
 
-const AnimatedSvg = Animated.createAnimatedComponent(Svg);
+const isDemoId = (id: string) => id.startsWith('demo-');
+
+async function respondToMatch(matchId: string, action: 'accept' | 'pass'): Promise<{ status: string }> {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const response = await fetch(
+    `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/respond-match`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify({ matchId, action }),
+    },
+  );
+
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.error || 'Failed to respond');
+  return result;
+}
 
 export default function MatchScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  const [acting, setActing] = useState(false);
 
   // Gradient glow intensities
   const pinkGlow = useRef(new Animated.Value(0.12)).current;
   const grayGlow = useRef(new Animated.Value(0.12)).current;
+
+  const handleMeet = async () => {
+    if (acting) return;
+    setActing(true);
+    try {
+      if (id && isDemoId(id)) {
+        router.replace(`/(app)/radar/${id}`);
+        return;
+      }
+      const result = await respondToMatch(id!, 'accept');
+      if (result.status === 'confirmed') {
+        // Both accepted — go to radar
+        router.replace(`/(app)/radar/${id}`);
+      } else {
+        // approved — waiting for the other person
+        Alert.alert('Nice!', "They'll be notified. Hang tight!");
+        router.back();
+      }
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Something went wrong');
+    } finally {
+      setActing(false);
+    }
+  };
+
+  const handlePass = async () => {
+    if (acting) return;
+    setActing(true);
+    try {
+      if (id && !isDemoId(id)) {
+        await respondToMatch(id, 'pass');
+      }
+      router.back();
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Something went wrong');
+    } finally {
+      setActing(false);
+    }
+  };
 
   const handleMeetPressIn = () => {
     Animated.parallel([
@@ -109,8 +172,9 @@ export default function MatchScreen() {
         <Pressable
           onPressIn={handlePassPressIn}
           onPressOut={handlePressOut}
-          onPress={() => router.back()}
-          style={styles.actionButton}
+          onPress={handlePass}
+          disabled={acting}
+          style={[styles.actionButton, acting && { opacity: 0.5 }]}
         >
           <Text style={styles.passText}>Let's not</Text>
         </Pressable>
@@ -118,8 +182,9 @@ export default function MatchScreen() {
         <Pressable
           onPressIn={handleMeetPressIn}
           onPressOut={handlePressOut}
-          onPress={() => router.replace(`/(app)/radar/${id}`)}
-          style={styles.actionButton}
+          onPress={handleMeet}
+          disabled={acting}
+          style={[styles.actionButton, acting && { opacity: 0.5 }]}
         >
           <Text style={styles.meetText}>Let's meet!</Text>
         </Pressable>

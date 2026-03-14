@@ -3,10 +3,9 @@ import { LyraProfile } from './profileParser';
 import { Message } from './interview';
 
 /**
- * Sends the completed interview data to the /embed edge function.
- * This function will:
- * 1. Generate 8 separate personality vectors via OpenAI.
- * 2. Save the full profile directly to the database.
+ * Sends the full profile + transcript to the /embed Edge Function,
+ * which generates 8 personality vectors and saves everything to the
+ * profiles table using the service role.
  */
 export async function saveProfile(
   userId: string,
@@ -24,16 +23,17 @@ export async function saveProfile(
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${session.access_token}`,
       },
-      body: JSON.stringify({
-        userId,
-        profile,
-        transcript,
-      }),
+      body: JSON.stringify({ userId, profile, transcript }),
     },
   );
 
   if (!response.ok) {
-    const errorData = await response.json();
-    throw new Error(errorData.error || `Save request failed: ${response.status}`);
+    const err = await response.json().catch(() => ({ error: 'Unknown error' }));
+    throw new Error(err.error || `Embed request failed: ${response.status}`);
+  }
+
+  const result = await response.json();
+  if (!result.success) {
+    throw new Error(result.error || 'Profile save failed');
   }
 }
