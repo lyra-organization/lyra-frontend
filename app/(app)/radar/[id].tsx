@@ -5,7 +5,7 @@ import Svg, {
   RadialGradient,
   Stop,
   Circle,
-  Polygon,
+  Path,
   Line,
 } from 'react-native-svg';
 import * as Haptics from 'expo-haptics';
@@ -28,6 +28,14 @@ const CENTER = RADAR_SIZE / 2;
 const MAX_R = RADAR_SIZE / 2 - 12;
 
 const GREEN = '#22C55E';
+
+function makeSector(cx: number, cy: number, r: number, angleRad: number, spreadRad: number) {
+  const x1 = cx + Math.sin(angleRad - spreadRad / 2) * r;
+  const y1 = cy - Math.cos(angleRad - spreadRad / 2) * r;
+  const x2 = cx + Math.sin(angleRad + spreadRad / 2) * r;
+  const y2 = cy - Math.cos(angleRad + spreadRad / 2) * r;
+  return `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 0 1 ${x2} ${y2} Z`;
+}
 const CONFETTI_COLORS = ['#FF00DD', '#22C55E', '#F59E0B', '#4466FF', '#FFFFFF', '#FF4D8D'];
 const CONFETTI_COUNT = 60;
 
@@ -253,18 +261,9 @@ export default function RadarScreen() {
   const dotX = CENTER + Math.sin(bearingRad) * dotDist;
   const dotY = CENTER - Math.cos(bearingRad) * dotDist;
 
-  const arrowLen = 50;
-  const arrowWidth = 18;
-  const arrowDist = 55;
-  const ax = CENTER + Math.sin(bearingRad) * arrowDist;
-  const ay = CENTER - Math.cos(bearingRad) * arrowDist;
-  const tipX = ax + Math.sin(bearingRad) * arrowLen;
-  const tipY = ay - Math.cos(bearingRad) * arrowLen;
-  const leftRad = bearingRad - Math.PI / 2;
-  const lx = ax + Math.sin(leftRad) * arrowWidth / 2;
-  const ly = ay - Math.cos(leftRad) * arrowWidth / 2;
-  const rx = ax - Math.sin(leftRad) * arrowWidth / 2;
-  const ry = ay + Math.cos(leftRad) * arrowWidth / 2;
+  const WIDE_SPREAD = (65 * Math.PI) / 180;
+  const NARROW_SPREAD = (22 * Math.PI) / 180;
+  const coneR = MAX_R * 0.92;
 
   // Zone-based display — no raw meters at close range
   const distText = distance > 80
@@ -339,17 +338,23 @@ export default function RadarScreen() {
           <Circle cx={CENTER} cy={CENTER} r={5} fill={color} />
 
           {distance > 15 && (
-            <Polygon
-              points={`${tipX},${tipY} ${lx},${ly} ${rx},${ry}`}
-              fill={color}
-              opacity={0.9}
-            />
-          )}
-
-          {distance > 15 && (
             <>
-              <Circle cx={dotX} cy={dotY} r={10} fill={color} fillOpacity={0.15} />
-              <Circle cx={dotX} cy={dotY} r={5} fill={color} />
+              {/* Wide outer glow cone — implies rough direction, not precision */}
+              <Path
+                d={makeSector(CENTER, CENTER, coneR, bearingRad, WIDE_SPREAD)}
+                fill={color}
+                fillOpacity={0.06}
+              />
+              {/* Narrow inner cone — brighter core */}
+              <Path
+                d={makeSector(CENTER, CENTER, coneR * 0.7, bearingRad, NARROW_SPREAD)}
+                fill={color}
+                fillOpacity={0.22}
+              />
+              {/* Peer dot with uncertainty halo */}
+              <Circle cx={dotX} cy={dotY} r={20} fill={color} fillOpacity={0.04} />
+              <Circle cx={dotX} cy={dotY} r={10} fill={color} fillOpacity={0.10} />
+              <Circle cx={dotX} cy={dotY} r={4} fill={color} fillOpacity={0.9} />
             </>
           )}
         </Svg>
