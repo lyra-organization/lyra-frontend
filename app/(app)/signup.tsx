@@ -51,13 +51,13 @@ export default function SignupScreen() {
 
       const { error } = await supabase
         .from('users')
-        .update({
+        .upsert({
+          auth_id: authUser.id,
           name: name.trim(),
           age: parseInt(age, 10),
           gender: [gender],                      // wrap in array, e.g. ['man']
           show_me: showMeMap[orientation] || [],  // e.g. ['man', 'woman', 'nonbinary']
-        })
-        .eq('auth_id', authUser.id);
+        }, { onConflict: 'auth_id' });
 
       if (error) throw error;
 
