@@ -9,7 +9,8 @@ import {
   Alert,
 } from 'react-native';
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
-import * as Speech from 'expo-speech';
+import { Audio } from 'expo-av';
+import * as FileSystem from 'expo-file-system';
 import Svg, {
   Defs,
   RadialGradient,
@@ -40,33 +41,113 @@ export default function OnboardingScreen() {
   const messagesRef = useRef<Message[]>([]);
   const speechBufferRef = useRef('');
   const finalTranscriptRef = useRef('');
+  const audioQueueRef = useRef<string[]>([]);
+  const isPlayingRef = useRef(false);
+  const currentSoundRef = useRef<Audio.Sound | null>(null);
 
-  // Speak a sentence immediately, queuing behind any in-progress speech
-  const speakChunk = useCallback((text: string) => {
-    const cleaned = text.trim();
-    if (!cleaned) return;
-    Speech.speak(cleaned, { language: 'en-US', _isQueued: true } as any);
+  // Configure audio session once on mount
+  useEffect(() => {
+    Audio.setAudioModeAsync({
+      playsInSilentModeIOS: true,
+      allowsRecordingIOS: false,
+    });
   }, []);
 
-  // Called on each streamed chunk — accumulate and speak sentence by sentence
+  // Play the next sentence in the queue via OpenAI TTS
+  const playNext = useCallback(async () => {
+    if (isPlayingRef.current || audioQueueRef.current.length === 0) return;
+    const sentence = audioQueueRef.current.shift()!;
+    isPlayingRef.current = true;
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(
+        `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/tts`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session?.access_token ?? ''}`,
+            'apikey': process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!,
+          },
+          body: JSON.stringify({ text: sentence }),
+        },
+      );
+      const { audio } = await res.json();
+      if (!audio) throw new Error('no audio');
+
+      const path = `${FileSystem.cacheDirectory}lyra_tts_${Date.now()}.mp3`;
+      await FileSystem.writeAsStringAsync(path, audio, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      const { sound } = await Audio.Sound.createAsync({ uri: path });
+      currentSoundRef.current = sound;
+
+      sound.setOnPlaybackStatusUpdate(async (status) => {
+        if (!status.isLoaded) return;
+        if (status.didJustFinish) {
+          isPlayingRef.current = false;
+          currentSoundRef.current = null;
+          await sound.unloadAsync();
+          await FileSystem.deleteAsync(path, { idempotent: true });
+          playNext();
+        }
+      });
+
+      await sound.playAsync();
+    } catch {
+      isPlayingRef.current = false;
+      playNext();
+    }
+  }, []);
+
+  // Stop all audio and clear the queue
+  const stopAudio = useCallback(async () => {
+    audioQueueRef.current = [];
+    isPlayingRef.current = false;
+    if (currentSoundRef.current) {
+      await currentSoundRef.current.stopAsync().catch(() => {});
+      await currentSoundRef.current.unloadAsync().catch(() => {});
+      currentSoundRef.current = null;
+    }
+  }, []);
+
+  // Accumulate streamed chunks and send to TTS in natural phrases
+  const pendingSentencesRef = useRef('');
+  const MIN_TTS_LENGTH = 60;
+
   const flushSpeechBuffer = useCallback((chunk: string, final = false) => {
     speechBufferRef.current += chunk;
-    const sentenceEnd = /[.!?]/;
 
     let buf = speechBufferRef.current;
     let match;
-    while ((match = buf.search(sentenceEnd)) !== -1) {
-      const sentence = buf.slice(0, match + 1);
+    while ((match = buf.search(/[.!?]/)) !== -1) {
+      const sentence = buf.slice(0, match + 1).trim();
       buf = buf.slice(match + 1);
-      speakChunk(sentence);
+      if (sentence) {
+        pendingSentencesRef.current += (pendingSentencesRef.current ? ' ' : '') + sentence;
+        if (pendingSentencesRef.current.length >= MIN_TTS_LENGTH) {
+          audioQueueRef.current.push(pendingSentencesRef.current);
+          pendingSentencesRef.current = '';
+          playNext();
+        }
+      }
     }
     speechBufferRef.current = buf;
 
-    if (final && buf.trim()) {
-      speakChunk(buf);
+    if (final) {
+      if (buf.trim()) {
+        pendingSentencesRef.current += (pendingSentencesRef.current ? ' ' : '') + buf.trim();
+      }
+      if (pendingSentencesRef.current) {
+        audioQueueRef.current.push(pendingSentencesRef.current);
+        pendingSentencesRef.current = '';
+      }
       speechBufferRef.current = '';
+      playNext();
     }
-  }, [speakChunk]);
+  }, [playNext]);
 
   // Text fade
   const textOpacity = useRef(new Animated.Value(0)).current;
@@ -151,7 +232,6 @@ export default function OnboardingScreen() {
   // Send a message to the interview and stream the response
   const sendMessage = useCallback(async (userMessage?: string) => {
     if (userMessage) {
-      // If user wants to end, inject a system-level hint to wrap up
       const endPhrases = ['end the convo', 'end convo', 'end the conversation', 'stop', 'done', 'finish', 'that\'s it', 'thats it', 'i\'m done', 'im done'];
       const lower = userMessage.toLowerCase().trim();
       if (endPhrases.some((p) => lower.includes(p))) {
@@ -170,7 +250,7 @@ export default function OnboardingScreen() {
     setDisplayText('');
     animateTextIn();
     speechBufferRef.current = '';
-    Speech.stop();
+    stopAudio();
 
     let fullResponse = '';
 
@@ -207,7 +287,7 @@ export default function OnboardingScreen() {
       setSpeaking(false);
       startIdle();
     }
-  }, [startSpeaking, startIdle, animateTextIn, flushSpeechBuffer]);
+  }, [startSpeaking, startIdle, animateTextIn, flushSpeechBuffer, stopAudio]);
 
   // Speech recognition events
   useSpeechRecognitionEvent('start', () => {
@@ -218,7 +298,6 @@ export default function OnboardingScreen() {
   });
 
   useSpeechRecognitionEvent('partialresults', (e) => {
-    // Show finalized segments + current partial together
     const partial = e.results?.[0]?.transcript || '';
     setTranscript(
       finalTranscriptRef.current
@@ -228,7 +307,6 @@ export default function OnboardingScreen() {
   });
 
   useSpeechRecognitionEvent('result', (e) => {
-    // A segment was finalized — append it once
     const text = e.results?.[0]?.transcript;
     if (text) {
       finalTranscriptRef.current += (finalTranscriptRef.current ? ' ' : '') + text;
@@ -258,9 +336,9 @@ export default function OnboardingScreen() {
   useEffect(() => {
     return () => {
       ExpoSpeechRecognitionModule.stop();
-      Speech.stop();
+      stopAudio();
     };
-  }, []);
+  }, [stopAudio]);
 
   // Start the interview on mount
   useEffect(() => {
@@ -268,24 +346,26 @@ export default function OnboardingScreen() {
   }, []);
 
   const handleMicPress = async () => {
-    // Don't allow listening while Lyra is speaking
     if (speaking) return;
 
     if (listening) {
-      // Tap to stop — this triggers the 'end' event which sends the message
       ExpoSpeechRecognitionModule.stop();
       return;
     }
 
-    // Stop any lingering TTS
-    Speech.stop();
+    await stopAudio();
     speechBufferRef.current = '';
 
     try {
+      const { granted } = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      if (!granted) {
+        Alert.alert('Permission denied', 'Microphone and speech recognition access is required.');
+        return;
+      }
       ExpoSpeechRecognitionModule.start({
         lang: 'en-US',
         interimResults: true,
-        continuous: true,  // Keep listening until manually stopped
+        continuous: true,
       });
     } catch {
       Alert.alert('Error', 'Could not start voice recognition. Please try again.');
@@ -459,8 +539,6 @@ const styles = StyleSheet.create({
     letterSpacing: -0.5,
     marginTop: 70,
   },
-
-  // Orb
   orbArea: {
     flex: 1,
     alignItems: 'center',
@@ -476,8 +554,6 @@ const styles = StyleSheet.create({
     width: ORB_SIZE,
     height: ORB_SIZE,
   },
-
-  // Lyra's text
   textArea: {
     height: 120,
     width: width,
@@ -505,8 +581,6 @@ const styles = StyleSheet.create({
     right: 0,
     height: 30,
   },
-
-  // User transcript
   transcriptArea: {
     width: width,
     paddingHorizontal: 44,
@@ -528,8 +602,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontStyle: 'italic',
   },
-
-  // Bottom
   bottomArea: {
     paddingBottom: 60,
     alignItems: 'center',
