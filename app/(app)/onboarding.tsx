@@ -43,6 +43,8 @@ export default function OnboardingScreen() {
   const audioQueueRef = useRef<string[]>([]);   // sentences waiting to be spoken
   const isPlayingRef = useRef(false);            // whether audio is currently playing
   const currentSoundRef = useRef<Audio.Sound | null>(null);
+  const streamActiveRef = useRef(false);         // true while LLM stream is producing chunks
+  const profileDetectedRef = useRef(false);      // true once <profile> tag seen in response
 
   // Configure audio session once on mount
   useEffect(() => {
@@ -91,14 +93,27 @@ export default function OnboardingScreen() {
           currentSoundRef.current = null;
           await sound.unloadAsync();
           await FileSystem.deleteAsync(path, { idempotent: true });
-          playNext(); // play next sentence in queue
+          // Check both gates: queue drained AND stream finished
+          if (audioQueueRef.current.length > 0) {
+            playNext();
+          } else if (!streamActiveRef.current) {
+            setSpeaking(false);
+            startIdle();
+          }
+          // else: queue empty but stream still active — stay in speaking state,
+          // flushSpeechBuffer will call playNext when next sentence arrives
         }
       });
 
       await sound.playAsync();
     } catch {
       isPlayingRef.current = false;
-      playNext(); // skip on error, keep queue moving
+      if (audioQueueRef.current.length > 0) {
+        playNext();
+      } else if (!streamActiveRef.current) {
+        setSpeaking(false);
+        startIdle();
+      }
     }
   }, []);
 
@@ -238,10 +253,13 @@ export default function OnboardingScreen() {
     }
 
     setSpeaking(true);
+    streamActiveRef.current = true;
+    profileDetectedRef.current = false;
     startSpeaking();
     setDisplayText('');
     animateTextIn();
     speechBufferRef.current = '';
+    pendingSentencesRef.current = '';
     stopAudio();
 
     let fullResponse = '';
@@ -250,14 +268,21 @@ export default function OnboardingScreen() {
       fullResponse = await streamInterview(
         messagesRef.current,
         (chunk) => {
+          // Detect <profile> tag — check accumulated buffer too in case tag splits across chunks
+          if (!profileDetectedRef.current) {
+            fullResponse += chunk;
+            if (fullResponse.includes('<profile>')) {
+              profileDetectedRef.current = true;
+            }
+          }
           // Strip <profile> tags from display text
           setDisplayText((prev) => {
             const updated = prev + chunk;
             const cleaned = updated.replace(/<profile>[\s\S]*$/, '').trim();
             return cleaned;
           });
-          // Speak chunk unless it's inside a <profile> block
-          if (!chunk.includes('<profile>') && !fullResponse.includes('<profile>')) {
+          // Speak chunk unless profile has been detected
+          if (!profileDetectedRef.current) {
             flushSpeechBuffer(chunk);
           }
         },
@@ -281,8 +306,12 @@ export default function OnboardingScreen() {
       console.error('Interview error:', err);
       setDisplayText(err.message || 'Something went wrong. Tap to try again.');
     } finally {
-      setSpeaking(false);
-      startIdle();
+      streamActiveRef.current = false;
+      // Only go idle if audio has already drained — otherwise playNext handles it
+      if (!isPlayingRef.current && audioQueueRef.current.length === 0) {
+        setSpeaking(false);
+        startIdle();
+      }
     }
   }, [startSpeaking, startIdle, animateTextIn, flushSpeechBuffer]);
 
@@ -561,35 +590,6 @@ const styles = StyleSheet.create({
   bottomArea: {
     paddingBottom: 60,
     alignItems: 'center',
-  },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    gap: 10,
-    width: '100%',
-  },
-  textInput: {
-    flex: 1,
-    backgroundColor: '#1A1A1A',
-    borderRadius: 24,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    color: '#FFFFFF',
-    fontSize: 16,
-    borderWidth: 1,
-    borderColor: '#333333',
-  },
-  sendButton: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 24,
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-  },
-  sendButtonText: {
-    color: '#000000',
-    fontSize: 16,
-    fontWeight: '600',
   },
   micButton: {
     width: 72,
