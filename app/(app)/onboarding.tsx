@@ -9,7 +9,8 @@ import {
   Alert,
 } from 'react-native';
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
-import * as Speech from 'expo-speech';
+import { Audio } from 'expo-av';
+import * as FileSystem from 'expo-file-system';
 import Svg, {
   Defs,
   RadialGradient,
@@ -39,35 +40,100 @@ export default function OnboardingScreen() {
   const [saving, setSaving] = useState(false);
   const messagesRef = useRef<Message[]>([]);
   const speechBufferRef = useRef('');
+  const audioQueueRef = useRef<string[]>([]);   // sentences waiting to be spoken
+  const isPlayingRef = useRef(false);            // whether audio is currently playing
+  const currentSoundRef = useRef<Audio.Sound | null>(null);
 
-  // Speak a sentence immediately, queuing behind any in-progress speech
-  const speakChunk = useCallback((text: string) => {
-    const cleaned = text.trim();
-    if (!cleaned) return;
-    Speech.speak(cleaned, { language: 'en-US', _isQueued: true } as any);
+  // Configure audio session once on mount
+  useEffect(() => {
+    Audio.setAudioModeAsync({
+      playsInSilentModeIOS: true,
+      allowsRecordingIOS: false,
+    });
+  }, []);
+
+  // Play the next sentence in the queue
+  const playNext = useCallback(async () => {
+    if (isPlayingRef.current || audioQueueRef.current.length === 0) return;
+    const sentence = audioQueueRef.current.shift()!;
+    isPlayingRef.current = true;
+
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const res = await fetch(
+        `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/tts`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${session?.access_token ?? ''}`,
+          },
+          body: JSON.stringify({ text: sentence }),
+        },
+      );
+      const { audio } = await res.json();
+      if (!audio) throw new Error('no audio');
+
+      // Write base64 MP3 to a temp file and play it
+      const path = `${FileSystem.cacheDirectory}lyra_tts_${Date.now()}.mp3`;
+      await FileSystem.writeAsStringAsync(path, audio, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      const { sound } = await Audio.Sound.createAsync({ uri: path });
+      currentSoundRef.current = sound;
+
+      sound.setOnPlaybackStatusUpdate(async (status) => {
+        if (!status.isLoaded) return;
+        if (status.didJustFinish) {
+          isPlayingRef.current = false;
+          currentSoundRef.current = null;
+          await sound.unloadAsync();
+          await FileSystem.deleteAsync(path, { idempotent: true });
+          playNext(); // play next sentence in queue
+        }
+      });
+
+      await sound.playAsync();
+    } catch {
+      isPlayingRef.current = false;
+      playNext(); // skip on error, keep queue moving
+    }
+  }, []);
+
+  // Stop all audio and clear the queue
+  const stopAudio = useCallback(async () => {
+    audioQueueRef.current = [];
+    isPlayingRef.current = false;
+    if (currentSoundRef.current) {
+      await currentSoundRef.current.stopAsync().catch(() => {});
+      await currentSoundRef.current.unloadAsync().catch(() => {});
+      currentSoundRef.current = null;
+    }
   }, []);
 
   // Called on each streamed chunk — accumulate and speak sentence by sentence
   const flushSpeechBuffer = useCallback((chunk: string, final = false) => {
     speechBufferRef.current += chunk;
-    const sentenceEnd = /[.!?]/;
 
     let buf = speechBufferRef.current;
     let match;
-    // Keep pulling out complete sentences and speaking them
-    while ((match = buf.search(sentenceEnd)) !== -1) {
-      const sentence = buf.slice(0, match + 1);
+    while ((match = buf.search(/[.!?]/)) !== -1) {
+      const sentence = buf.slice(0, match + 1).trim();
       buf = buf.slice(match + 1);
-      speakChunk(sentence);
+      if (sentence) {
+        audioQueueRef.current.push(sentence);
+        playNext();
+      }
     }
     speechBufferRef.current = buf;
 
-    // On final chunk, speak whatever's left in the buffer
     if (final && buf.trim()) {
-      speakChunk(buf);
+      audioQueueRef.current.push(buf.trim());
       speechBufferRef.current = '';
+      playNext();
     }
-  }, [speakChunk]);
+  }, [playNext]);
 
   // Text fade
   const textOpacity = useRef(new Animated.Value(0)).current;
@@ -160,7 +226,7 @@ export default function OnboardingScreen() {
     setDisplayText('');
     animateTextIn();
     speechBufferRef.current = '';
-    Speech.stop();
+    stopAudio();
 
     let fullResponse = '';
 
@@ -233,7 +299,7 @@ export default function OnboardingScreen() {
   useEffect(() => {
     return () => {
       ExpoSpeechRecognitionModule.stop();
-      Speech.stop();
+      stopAudio();
     };
   }, []);
 
@@ -250,10 +316,16 @@ export default function OnboardingScreen() {
       return;
     }
 
-    Speech.stop();
+    // Stop Lyra mid-sentence if still talking
+    await stopAudio();
     speechBufferRef.current = '';
 
     try {
+      const { granted } = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+      if (!granted) {
+        Alert.alert('Permission denied', 'Microphone and speech recognition access is required.');
+        return;
+      }
       ExpoSpeechRecognitionModule.start({ lang: 'en-US', interimResults: true });
     } catch {
       Alert.alert('Error', 'Could not start voice recognition. Please try again.');
