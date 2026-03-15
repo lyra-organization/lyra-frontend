@@ -28,7 +28,17 @@ export default function LoginScreen() {
       });
 
       if (!signInError) {
-        // Existing user — routing handled by auth state listener
+        // Existing user — ensure users row exists
+        const { data: { user: existingUser } } = await supabase.auth.getUser();
+        if (existingUser) {
+          await supabase
+            .from('users')
+            .upsert(
+              { auth_id: existingUser.id, name: 'User' },
+              { onConflict: 'auth_id' },
+            );
+        }
+        router.replace('/(app)/signup');
         return;
       }
 
