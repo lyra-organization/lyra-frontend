@@ -54,7 +54,13 @@
           "localNetworkUsagePermissionText": "Lyra uses local networking to detect when your match is nearby"
         }
       ],
-      "expo-speech-recognition"
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Lyra uses your microphone for the voice interview.",
+          "speechRecognitionPermission": "Lyra listens to your voice to conduct the personality interview."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
