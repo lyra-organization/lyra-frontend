@@ -5,12 +5,13 @@ import {
   StyleSheet,
   Animated,
   TouchableWithoutFeedback,
+  TouchableOpacity,
   Dimensions,
 } from 'react-native';
 import Svg, { Defs, RadialGradient, Stop, Circle, Ellipse } from 'react-native-svg';
 import { router } from 'expo-router';
 import { supabase } from '../../lib/supabase';
-import { startLocationTracking } from '../../lib/location';
+import { startLocationTracking, stopLocationTracking } from '../../lib/location';
 import { registerForPushNotifications, setupNotificationResponseListener } from '../../lib/notifications';
 
 const { width } = Dimensions.get('window');
@@ -104,6 +105,11 @@ export default function HomeScreen() {
     };
   }, []);
 
+  const handleSignOut = async () => {
+    await stopLocationTracking();
+    await supabase.auth.signOut();
+  };
+
   const handleTap = () => {
     tapCount.current += 1;
     if (tapTimer.current) clearTimeout(tapTimer.current);
@@ -167,6 +173,10 @@ export default function HomeScreen() {
         </Text>
 
         <Text style={styles.hint}>Tap 5x for demo</Text>
+
+        <TouchableOpacity style={styles.signOutButton} onPress={handleSignOut}>
+          <Text style={styles.signOutText}>Sign Out</Text>
+        </TouchableOpacity>
       </View>
     </TouchableWithoutFeedback>
   );
@@ -208,5 +218,15 @@ const styles = StyleSheet.create({
     bottom: 50,
     color: '#222222',
     fontSize: 12,
+  },
+  signOutButton: {
+    position: 'absolute',
+    top: 60,
+    right: 20,
+    padding: 10,
+  },
+  signOutText: {
+    color: '#333333',
+    fontSize: 14,
   },
 });
