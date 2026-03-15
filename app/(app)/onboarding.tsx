@@ -8,7 +8,7 @@ import {
   Animated,
   Alert,
 } from 'react-native';
-import Voice from '@react-native-voice/voice';
+import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 import * as Speech from 'expo-speech';
 import Svg, {
   Defs,
@@ -204,38 +204,38 @@ export default function OnboardingScreen() {
     }
   }, [startSpeaking, startIdle, animateTextIn, flushSpeechBuffer]);
 
-  // Wire up Voice recognition — must be after animateTextOut and sendMessage
+  // Wire up speech recognition events
+  useSpeechRecognitionEvent('start', () => {
+    setListening(true);
+    setTranscript('');
+    startListeningAnim();
+  });
+
+  useSpeechRecognitionEvent('partialresults', (e) => {
+    if (e.results?.[0]?.transcript) setTranscript(e.results[0].transcript);
+  });
+
+  useSpeechRecognitionEvent('result', async (e) => {
+    const text = e.results?.[0]?.transcript;
+    setListening(false);
+    setTranscript('');
+    if (!text) return;
+    await animateTextOut();
+    sendMessage(text);
+  });
+
+  useSpeechRecognitionEvent('error', () => {
+    setListening(false);
+    setTranscript('');
+    startIdle();
+  });
+
   useEffect(() => {
-    Voice.onSpeechStart = () => {
-      setListening(true);
-      setTranscript('');
-      startListeningAnim();
-    };
-
-    Voice.onSpeechPartialResults = (e: any) => {
-      if (e.value?.[0]) setTranscript(e.value[0]);
-    };
-
-    Voice.onSpeechResults = async (e: any) => {
-      const text = e.value?.[0];
-      setListening(false);
-      setTranscript('');
-      if (!text) return;
-      await animateTextOut();
-      sendMessage(text);
-    };
-
-    Voice.onSpeechError = () => {
-      setListening(false);
-      setTranscript('');
-      startIdle();
-    };
-
     return () => {
-      Voice.destroy().then(Voice.removeAllListeners);
+      ExpoSpeechRecognitionModule.stop();
       Speech.stop();
     };
-  }, [startListeningAnim, startIdle, animateTextOut, sendMessage]);
+  }, []);
 
   // Start the interview on mount
   useEffect(() => {
@@ -246,7 +246,7 @@ export default function OnboardingScreen() {
     if (speaking) return;
 
     if (listening) {
-      await Voice.stop();
+      ExpoSpeechRecognitionModule.stop();
       return;
     }
 
@@ -254,7 +254,7 @@ export default function OnboardingScreen() {
     speechBufferRef.current = '';
 
     try {
-      await Voice.start('en-US');
+      ExpoSpeechRecognitionModule.start({ lang: 'en-US', interimResults: true });
     } catch {
       Alert.alert('Error', 'Could not start voice recognition. Please try again.');
     }

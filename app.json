@@ -53,7 +53,8 @@
           "bonjourServicesName": "lyra",
           "localNetworkUsagePermissionText": "Lyra uses local networking to detect when your match is nearby"
         }
-      ]
+      ],
+      "expo-speech-recognition"
     ],
     "experiments": {
       "typedRoutes": true
