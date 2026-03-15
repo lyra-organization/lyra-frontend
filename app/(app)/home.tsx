@@ -56,7 +56,7 @@ export default function HomeScreen() {
     let navigated = false;
 
     const navigateToMatch = (matchId: string, mode: 'push' | 'replace' = 'push') => {
-      if (navigated) return;
+      if (navigated && mode !== 'replace') return;
       navigated = true;
       if (pollInterval) clearInterval(pollInterval);
       if (mode === 'replace') {
