@@ -233,7 +233,7 @@ export default function RadarScreen() {
     ]).start();
 
     // Mark the match as "met" — fire and forget
-    if (id && !isDemoId(id)) {
+    if (id) {
       try {
         const { data: { session } } = await supabase.auth.getSession();
         if (session) {
