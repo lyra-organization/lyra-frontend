@@ -1,73 +1,58 @@
 import React, { useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Alert, Platform } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Alert, TextInput } from 'react-native';
 import { router } from 'expo-router';
-import * as AppleAuthentication from 'expo-apple-authentication';
-import * as Crypto from 'expo-crypto';
 import { supabase } from '../../lib/supabase';
 
 export default function LoginScreen() {
+  const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleAppleSignIn = async () => {
+  const handleContinue = async () => {
     if (loading) return;
+    const trimmed = email.trim().toLowerCase();
+    if (!trimmed) {
+      Alert.alert('Missing Email', 'Please enter your email.');
+      return;
+    }
     setLoading(true);
 
     try {
-      // Generate nonce for security
-      const rawNonce = Crypto.randomUUID();
-      const hashedNonce = await Crypto.digestStringAsync(
-        Crypto.CryptoDigestAlgorithm.SHA256,
-        rawNonce,
-      );
+      // Dev shortcut: use a deterministic password so we can sign up / sign in
+      // with just an email. Will be replaced with OTP later.
+      const devPassword = `${trimmed}_lyra_dev_2026`;
 
-      // Apple Sign-In
-      const credential = await AppleAuthentication.signInAsync({
-        requestedScopes: [
-          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
-          AppleAuthentication.AppleAuthenticationScope.EMAIL,
-        ],
-        nonce: hashedNonce,
+      // Try signing in first (returning user)
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email: trimmed,
+        password: devPassword,
       });
 
-      if (!credential.identityToken) {
-        throw new Error('No identity token received from Apple');
+      if (!signInError) {
+        // Existing user — routing handled by auth state listener
+        return;
       }
 
-      // Sign in with Supabase using Apple's identity token
-      const { data, error } = await supabase.auth.signInWithIdToken({
-        provider: 'apple',
-        token: credential.identityToken,
-        nonce: rawNonce,
+      // New user — sign up
+      const { data, error: signUpError } = await supabase.auth.signUp({
+        email: trimmed,
+        password: devPassword,
       });
+      if (signUpError) throw signUpError;
 
-      if (error) throw error;
-
-      // Create or update user row in users table
       const authUser = data.user;
-      const fullName = credential.fullName;
-      const displayName = fullName
-        ? [fullName.givenName, fullName.familyName].filter(Boolean).join(' ')
-        : undefined;
+      if (!authUser) throw new Error('Sign up succeeded but no user returned');
 
       const { error: upsertError } = await supabase
         .from('users')
         .upsert(
-          {
-            auth_id: authUser.id,
-            name: displayName || 'User',
-          },
+          { auth_id: authUser.id, name: 'User' },
           { onConflict: 'auth_id' },
         );
-
       if (upsertError) throw upsertError;
 
       router.replace('/(app)/signup');
     } catch (err: any) {
-      if (err.code === 'ERR_REQUEST_CANCELED') {
-        // User cancelled — do nothing
-      } else {
-        Alert.alert('Sign In Error', err.message || 'Something went wrong');
-      }
+      Alert.alert('Error', err.message || 'Something went wrong');
     } finally {
       setLoading(false);
     }
@@ -81,13 +66,24 @@ export default function LoginScreen() {
       </View>
 
       <View style={styles.bottom}>
+        <TextInput
+          style={styles.input}
+          placeholder="Email"
+          placeholderTextColor="#666666"
+          keyboardType="email-address"
+          autoCapitalize="none"
+          autoCorrect={false}
+          value={email}
+          onChangeText={setEmail}
+        />
+
         <TouchableOpacity
-          style={[styles.appleButton, loading && { opacity: 0.5 }]}
-          onPress={handleAppleSignIn}
+          style={[styles.continueButton, loading && { opacity: 0.5 }]}
+          onPress={handleContinue}
           disabled={loading}
         >
-          <Text style={styles.appleButtonText}>
-            {loading ? 'Signing in...' : ' Continue with Apple'}
+          <Text style={styles.continueButtonText}>
+            {loading ? 'Please wait...' : 'Continue'}
           </Text>
         </TouchableOpacity>
       </View>
@@ -123,13 +119,24 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingBottom: 50,
   },
-  appleButton: {
+  input: {
+    backgroundColor: '#1A1A1A',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    color: '#FFFFFF',
+    fontSize: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#333333',
+  },
+  continueButton: {
     backgroundColor: '#FFFFFF',
     borderRadius: 44,
     paddingVertical: 16,
     alignItems: 'center',
   },
-  appleButtonText: {
+  continueButtonText: {
     color: '#000000',
     fontSize: 18,
     fontWeight: '600',

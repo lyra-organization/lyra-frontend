@@ -1,3 +1,4 @@
+import 'react-native-url-polyfill/auto';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { createClient } from '@supabase/supabase-js';

@@ -33,6 +33,9 @@ export default function RootLayout() {
 
     if (!session && inAppGroup) {
       router.replace('/(auth)/login');
+    } else if (session && inAuthGroup) {
+      // Authenticated user still on login — send to smart router
+      router.replace('/');
     }
   }, [session, segments, initialized]);
 
