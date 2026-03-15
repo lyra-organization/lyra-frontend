@@ -2,11 +2,14 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
   View,
   Text,
+  TextInput,
   TouchableOpacity,
   StyleSheet,
   Dimensions,
   Animated,
   Alert,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import Voice from '@react-native-voice/voice';
 import * as Speech from 'expo-speech';
@@ -37,6 +40,7 @@ export default function OnboardingScreen() {
   const [displayText, setDisplayText] = useState('');
   const [profile, setProfile] = useState<LyraProfile | null>(null);
   const [saving, setSaving] = useState(false);
+  const [inputText, setInputText] = useState('');
   const messagesRef = useRef<Message[]>([]);
   const speechBufferRef = useRef('');
 
@@ -229,7 +233,8 @@ export default function OnboardingScreen() {
         }
       }
     } catch (err: any) {
-      setDisplayText('Something went wrong. Tap to try again.');
+      console.error('Interview error:', err);
+      setDisplayText(err.message || 'Something went wrong. Tap to try again.');
     } finally {
       setSpeaking(false);
       startIdle();
@@ -241,23 +246,13 @@ export default function OnboardingScreen() {
     sendMessage();
   }, []);
 
-  const handleMicPress = async () => {
-    if (speaking) return;
+  const handleSend = async () => {
+    const trimmed = inputText.trim();
+    if (speaking || !trimmed) return;
 
-    if (listening) {
-      await Voice.stop();
-      return;
-    }
-
-    // Stop Lyra mid-sentence if still talking
-    Speech.stop();
-    speechBufferRef.current = '';
-
-    try {
-      await Voice.start('en-US');
-    } catch {
-      Alert.alert('Error', 'Could not start voice recognition. Please try again.');
-    }
+    setInputText('');
+    await animateTextOut();
+    sendMessage(trimmed);
   };
 
   const handleThatsMe = async () => {
@@ -288,7 +283,10 @@ export default function OnboardingScreen() {
   };
 
   return (
-    <View style={styles.container}>
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
       {/* Title */}
       <Text style={styles.title}>Lyra</Text>
 
@@ -373,7 +371,7 @@ export default function OnboardingScreen() {
         </View>
       </View>
 
-      {/* Bottom — mic, "That's me!", or continue */}
+      {/* Bottom — input or "That's me!" */}
       <View style={styles.bottomArea}>
         {done ? (
           <TouchableOpacity
@@ -386,26 +384,28 @@ export default function OnboardingScreen() {
             </Text>
           </TouchableOpacity>
         ) : (
-          <TouchableOpacity
-            style={[styles.micButton, speaking && styles.micSpeaking, listening && styles.micListening]}
-            onPress={handleMicPress}
-            disabled={speaking}
-            activeOpacity={0.7}
-          >
-            <Svg width={24} height={24} viewBox="0 0 24 24" fill="none">
-              <Path
-                d="M12 1C10.34 1 9 2.34 9 4V12C9 13.66 10.34 15 12 15C13.66 15 15 13.66 15 12V4C15 2.34 13.66 1 12 1Z"
-                fill="#FFFFFF"
-              />
-              <Path
-                d="M17 12C17 14.76 14.76 17 12 17C9.24 17 7 14.76 7 12H5C5 15.53 7.61 18.43 11 18.92V22H13V18.92C16.39 18.43 19 15.53 19 12H17Z"
-                fill="#FFFFFF"
-              />
-            </Svg>
-          </TouchableOpacity>
+          <View style={styles.inputRow}>
+            <TextInput
+              style={styles.textInput}
+              placeholder="Type your answer..."
+              placeholderTextColor="#666666"
+              value={inputText}
+              onChangeText={setInputText}
+              editable={!speaking}
+              onSubmitEditing={handleSend}
+              returnKeyType="send"
+            />
+            <TouchableOpacity
+              style={[styles.sendButton, (speaking || !inputText.trim()) && { opacity: 0.3 }]}
+              onPress={handleSend}
+              disabled={speaking || !inputText.trim()}
+            >
+              <Text style={styles.sendButtonText}>Send</Text>
+            </TouchableOpacity>
+          </View>
         )}
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -442,13 +442,13 @@ const styles = StyleSheet.create({
 
   // Text
   textArea: {
-    height: 90,
+    height: 120,
     width: width,
     justifyContent: 'center',
     overflow: 'hidden',
   },
   questionText: {
-    color: '#AAAAAA',
+    color: '#FFFFFF',
     fontSize: 15,
     lineHeight: 22,
     textAlign: 'center',
@@ -474,18 +474,34 @@ const styles = StyleSheet.create({
     paddingBottom: 60,
     alignItems: 'center',
   },
-  micButton: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: '#111111',
-    borderWidth: 1,
-    borderColor: '#2A2A2A',
-    justifyContent: 'center',
+  inputRow: {
+    flexDirection: 'row',
     alignItems: 'center',
+    paddingHorizontal: 20,
+    gap: 10,
+    width: '100%',
   },
-  micSpeaking: {
-    opacity: 0.3,
+  textInput: {
+    flex: 1,
+    backgroundColor: '#1A1A1A',
+    borderRadius: 24,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    color: '#FFFFFF',
+    fontSize: 16,
+    borderWidth: 1,
+    borderColor: '#333333',
+  },
+  sendButton: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+  },
+  sendButtonText: {
+    color: '#000000',
+    fontSize: 16,
+    fontWeight: '600',
   },
   micListening: {
     backgroundColor: '#FF00DD',

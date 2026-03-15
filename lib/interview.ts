@@ -31,7 +31,9 @@ export async function streamInterview(
   );
 
   if (!response.ok) {
-    throw new Error(`Interview request failed: ${response.status}`);
+    const errorBody = await response.text();
+    console.error('Interview error body:', errorBody);
+    throw new Error(`Interview failed (${response.status}): ${errorBody}`);
   }
 
   // React Native's fetch doesn't support ReadableStream,
