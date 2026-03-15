@@ -31,8 +31,6 @@ const GREEN = '#22C55E';
 const CONFETTI_COLORS = ['#FF00DD', '#22C55E', '#F59E0B', '#4466FF', '#FFFFFF', '#FF4D8D'];
 const CONFETTI_COUNT = 60;
 
-// Demo mode flag — falls back to simulation if no match ID
-const isDemoId = (id: string) => id.startsWith('demo-');
 
 function ConfettiParticle({ delay, color, startX }: { delay: number; color: string; startX: number }) {
   const translateY = useRef(new Animated.Value(0)).current;
@@ -101,10 +99,9 @@ function ConfettiOverlay() {
 
 export default function RadarScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const [distance, setDistance] = useState(88);
+  const [distance, setDistance] = useState(100);
   const [bearing, setBearing] = useState(0);
   const [celebration, setCelebration] = useState(false);
-  const startTime = useRef(Date.now());
   const myLocation = useRef<{ lat: number; lon: number } | null>(null);
   const celebrationRef = useRef(false);
   const { push: smoothDistance } = useSmoothedDistance(0.15);
@@ -143,31 +140,9 @@ export default function RadarScreen() {
     return () => anim.stop();
   }, [distance, arrowGlow]);
 
-  // Real radar via Broadcast channel, or demo simulation
+  // Real radar via Broadcast channel
   useEffect(() => {
-    if (isDemoId(id || '')) {
-      // Demo mode — simulate distance decreasing
-      const interval = setInterval(() => {
-        const elapsed = Date.now() - startTime.current;
-        const progress = Math.min(elapsed / 25000, 1);
-        const newDist = 88 * (1 - progress);
-        setDistance(Math.max(0, newDist));
-
-        setBearing((prev) => {
-          const drift = (Math.random() - 0.5) * 8;
-          return (prev + drift + 360) % 360;
-        });
-
-        if (newDist < 3 && !celebrationRef.current) {
-          triggerCelebration();
-          clearInterval(interval);
-        }
-      }, 200);
-
-      return () => clearInterval(interval);
-    }
-
-    // Real mode — GPS + Broadcast channel
+    // GPS + Broadcast channel
     const radar = joinRadarChannel(id!, (peerLat, peerLon) => {
       if (!myLocation.current) return;
 
@@ -215,7 +190,7 @@ export default function RadarScreen() {
 
   // Nearby Connections — detect when phones are in Bluetooth/WiFi range (~30m)
   useEffect(() => {
-    if (isDemoId(id || '') || celebrationRef.current) return;
+    if (celebrationRef.current) return;
 
     const serviceName = `lyra-${id}`;
 
