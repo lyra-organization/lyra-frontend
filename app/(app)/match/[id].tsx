@@ -9,6 +9,9 @@ import {
   Pressable,
   Alert,
   ActivityIndicator,
+  ScrollView,
+  NativeSyntheticEvent,
+  NativeScrollEvent,
 } from 'react-native';
 import Svg, {
   Defs,
@@ -21,13 +24,15 @@ import { supabase } from '../../../lib/supabase';
 
 const { width, height } = Dimensions.get('window');
 
+const PHOTO_SIZE = 210;
+
 const DEMO_PROFILE = {
   name: 'Sam',
   age: 26,
   bio: 'I like coffee, reading, diving, and walks in the world.',
   matchReason:
     'Sam loves to stay in when it rains and is obsessed with books, just like you! You should ask her about her favorite book.',
-  photo: 'https://i.pravatar.cc/300?img=5',
+  photos: ['https://i.pravatar.cc/300?img=5'],
 };
 
 const isDemoId = (id: string) => id.startsWith('demo-');
@@ -37,7 +42,7 @@ interface MatchProfile {
   age: number;
   bio: string;
   matchReason: string;
-  photo: string | null;
+  photos: string[];
 }
 
 async function fetchMatchProfile(matchId: string): Promise<MatchProfile> {
@@ -67,7 +72,7 @@ async function fetchMatchProfile(matchId: string): Promise<MatchProfile> {
 
   // Fetch user data and profile data in parallel (by internal id)
   const [userResult, profileResult] = await Promise.all([
-    supabase.from('users').select('name, age, photo_url').eq('id', otherUserId).single(),
+    supabase.from('users').select('name, age, photo_url, photo_urls').eq('id', otherUserId).single(),
     supabase.from('profiles').select('summary').eq('user_id', otherUserId).single(),
   ]);
 
@@ -76,12 +81,19 @@ async function fetchMatchProfile(matchId: string): Promise<MatchProfile> {
   const userData = userResult.data;
   const profileData = profileResult.data;
 
+  // Build photos array: prefer photo_urls, fall back to single photo_url
+  const photos: string[] = userData.photo_urls?.length
+    ? userData.photo_urls
+    : userData.photo_url
+      ? [userData.photo_url]
+      : [];
+
   return {
     name: userData.name || 'Someone',
     age: userData.age || 0,
     bio: '',
     matchReason: profileData?.summary || '',
-    photo: userData.photo_url || null,
+    photos,
   };
 }
 
@@ -112,6 +124,12 @@ export default function MatchScreen() {
   const [acting, setActing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<MatchProfile>(DEMO_PROFILE);
+  const [activePhotoIndex, setActivePhotoIndex] = useState(0);
+
+  const handlePhotoScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const index = Math.round(e.nativeEvent.contentOffset.x / PHOTO_SIZE);
+    setActivePhotoIndex(index);
+  };
 
   // Gradient glow intensities
   const pinkGlow = useRef(new Animated.Value(0.12)).current;
@@ -234,11 +252,32 @@ export default function MatchScreen() {
         <Text style={styles.header}>Someone compatible is near!</Text>
 
         <View style={styles.photoContainer}>
-          {profile.photo ? (
-            <Image source={{ uri: profile.photo }} style={styles.photo} />
+          {profile.photos.length > 0 ? (
+            <View style={styles.photoClip}>
+              <ScrollView
+                horizontal
+                pagingEnabled
+                showsHorizontalScrollIndicator={false}
+                onMomentumScrollEnd={handlePhotoScroll}
+              >
+                {profile.photos.map((uri, i) => (
+                  <Image key={i} source={{ uri }} style={styles.photo} />
+                ))}
+              </ScrollView>
+            </View>
           ) : (
             <View style={[styles.photo, styles.initialsContainer]}>
               <Text style={styles.initialsText}>{initials}</Text>
+            </View>
+          )}
+          {profile.photos.length > 1 && (
+            <View style={styles.dots}>
+              {profile.photos.map((_, i) => (
+                <View
+                  key={i}
+                  style={[styles.dot, i === activePhotoIndex && styles.dotActive]}
+                />
+              ))}
             </View>
           )}
         </View>
@@ -318,13 +357,35 @@ const styles = StyleSheet.create({
   },
   photoContainer: {
     alignSelf: 'center',
+    alignItems: 'center',
     marginBottom: 16,
   },
+  photoClip: {
+    width: PHOTO_SIZE,
+    height: PHOTO_SIZE,
+    borderRadius: PHOTO_SIZE / 2,
+    overflow: 'hidden',
+  },
   photo: {
-    width: 210,
-    height: 210,
-    borderRadius: 105,
+    width: PHOTO_SIZE,
+    height: PHOTO_SIZE,
+    borderRadius: PHOTO_SIZE / 2,
     backgroundColor: '#111111',
+  },
+  dots: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    marginTop: 10,
+    gap: 6,
+  },
+  dot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: '#333333',
+  },
+  dotActive: {
+    backgroundColor: '#FFFFFF',
   },
   initialsContainer: {
     justifyContent: 'center',

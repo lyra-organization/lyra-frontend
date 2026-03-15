@@ -39,6 +39,7 @@ export default function OnboardingScreen() {
   const [saving, setSaving] = useState(false);
   const messagesRef = useRef<Message[]>([]);
   const speechBufferRef = useRef('');
+  const finalTranscriptRef = useRef('');
 
   // Speak a sentence immediately, queuing behind any in-progress speech
   const speakChunk = useCallback((text: string) => {
@@ -54,7 +55,6 @@ export default function OnboardingScreen() {
 
     let buf = speechBufferRef.current;
     let match;
-    // Keep pulling out complete sentences and speaking them
     while ((match = buf.search(sentenceEnd)) !== -1) {
       const sentence = buf.slice(0, match + 1);
       buf = buf.slice(match + 1);
@@ -62,7 +62,6 @@ export default function OnboardingScreen() {
     }
     speechBufferRef.current = buf;
 
-    // On final chunk, speak whatever's left in the buffer
     if (final && buf.trim()) {
       speakChunk(buf);
       speechBufferRef.current = '';
@@ -152,11 +151,22 @@ export default function OnboardingScreen() {
   // Send a message to the interview and stream the response
   const sendMessage = useCallback(async (userMessage?: string) => {
     if (userMessage) {
-      messagesRef.current.push({ role: 'user', content: userMessage });
+      // If user wants to end, inject a system-level hint to wrap up
+      const endPhrases = ['end the convo', 'end convo', 'end the conversation', 'stop', 'done', 'finish', 'that\'s it', 'thats it', 'i\'m done', 'im done'];
+      const lower = userMessage.toLowerCase().trim();
+      if (endPhrases.some((p) => lower.includes(p))) {
+        messagesRef.current.push({
+          role: 'user',
+          content: userMessage + '\n\n[The user wants to end the interview. Immediately generate their <profile> summary now based on everything discussed so far. Do not ask any more questions.]',
+        });
+      } else {
+        messagesRef.current.push({ role: 'user', content: userMessage });
+      }
     }
 
     setSpeaking(true);
     startSpeaking();
+    setTranscript('');
     setDisplayText('');
     animateTextIn();
     speechBufferRef.current = '';
@@ -168,30 +178,25 @@ export default function OnboardingScreen() {
       fullResponse = await streamInterview(
         messagesRef.current,
         (chunk) => {
-          // Strip <profile> tags from display text
           setDisplayText((prev) => {
             const updated = prev + chunk;
             const cleaned = updated.replace(/<profile>[\s\S]*$/, '').trim();
             return cleaned;
           });
-          // Speak chunk unless it's inside a <profile> block
           if (!chunk.includes('<profile>') && !fullResponse.includes('<profile>')) {
             flushSpeechBuffer(chunk);
           }
         },
       );
-      // Flush any remaining buffer after stream ends
       flushSpeechBuffer('', true);
 
       messagesRef.current.push({ role: 'assistant', content: fullResponse });
 
-      // Check if interview is complete
       if (containsProfile(fullResponse)) {
         const parsed = parseProfile(fullResponse);
         if (parsed) {
           setProfile(parsed);
           setDone(true);
-          // Show the summary instead of the raw text
           setDisplayText(parsed.summary);
         }
       }
@@ -204,29 +209,49 @@ export default function OnboardingScreen() {
     }
   }, [startSpeaking, startIdle, animateTextIn, flushSpeechBuffer]);
 
-  // Wire up speech recognition events
+  // Speech recognition events
   useSpeechRecognitionEvent('start', () => {
     setListening(true);
     setTranscript('');
+    finalTranscriptRef.current = '';
     startListeningAnim();
   });
 
   useSpeechRecognitionEvent('partialresults', (e) => {
-    if (e.results?.[0]?.transcript) setTranscript(e.results[0].transcript);
+    // Show finalized segments + current partial together
+    const partial = e.results?.[0]?.transcript || '';
+    setTranscript(
+      finalTranscriptRef.current
+        ? finalTranscriptRef.current + ' ' + partial
+        : partial,
+    );
   });
 
-  useSpeechRecognitionEvent('result', async (e) => {
+  useSpeechRecognitionEvent('result', (e) => {
+    // A segment was finalized — append it once
     const text = e.results?.[0]?.transcript;
+    if (text) {
+      finalTranscriptRef.current += (finalTranscriptRef.current ? ' ' : '') + text;
+      setTranscript(finalTranscriptRef.current);
+    }
+  });
+
+  useSpeechRecognitionEvent('end', () => {
     setListening(false);
-    setTranscript('');
-    if (!text) return;
-    await animateTextOut();
-    sendMessage(text);
+    const text = finalTranscriptRef.current.trim();
+    finalTranscriptRef.current = '';
+    if (!text) {
+      setTranscript('');
+      startIdle();
+      return;
+    }
+    animateTextOut().then(() => sendMessage(text));
   });
 
   useSpeechRecognitionEvent('error', () => {
     setListening(false);
     setTranscript('');
+    finalTranscriptRef.current = '';
     startIdle();
   });
 
@@ -243,18 +268,25 @@ export default function OnboardingScreen() {
   }, []);
 
   const handleMicPress = async () => {
+    // Don't allow listening while Lyra is speaking
     if (speaking) return;
 
     if (listening) {
+      // Tap to stop — this triggers the 'end' event which sends the message
       ExpoSpeechRecognitionModule.stop();
       return;
     }
 
+    // Stop any lingering TTS
     Speech.stop();
     speechBufferRef.current = '';
 
     try {
-      ExpoSpeechRecognitionModule.start({ lang: 'en-US', interimResults: true });
+      ExpoSpeechRecognitionModule.start({
+        lang: 'en-US',
+        interimResults: true,
+        continuous: true,  // Keep listening until manually stopped
+      });
     } catch {
       Alert.alert('Error', 'Could not start voice recognition. Please try again.');
     }
@@ -268,7 +300,6 @@ export default function OnboardingScreen() {
       const { data: { user: authUser } } = await supabase.auth.getUser();
       if (!authUser) throw new Error('Not authenticated');
 
-      // Get the user's internal ID
       const { data: userData, error: userError } = await supabase
         .from('users')
         .select('id')
@@ -332,7 +363,7 @@ export default function OnboardingScreen() {
         </Animated.View>
       </View>
 
-      {/* Text area */}
+      {/* Lyra's text */}
       <View style={styles.textArea}>
         <Animated.Text
           style={[
@@ -346,7 +377,6 @@ export default function OnboardingScreen() {
           {displayText}
         </Animated.Text>
 
-        {/* Top fade overlay */}
         <View style={styles.fadeTop} pointerEvents="none">
           <Svg width={width} height={30}>
             <Defs>
@@ -359,7 +389,6 @@ export default function OnboardingScreen() {
           </Svg>
         </View>
 
-        {/* Bottom fade overlay */}
         <View style={styles.fadeBottom} pointerEvents="none">
           <Svg width={width} height={30}>
             <Defs>
@@ -373,7 +402,15 @@ export default function OnboardingScreen() {
         </View>
       </View>
 
-      {/* Bottom — input or "That's me!" */}
+      {/* User's speech transcript */}
+      {listening && transcript ? (
+        <View style={styles.transcriptArea}>
+          <Text style={styles.transcriptLabel}>You</Text>
+          <Text style={styles.transcriptText}>{transcript}</Text>
+        </View>
+      ) : null}
+
+      {/* Bottom — mic or "That's me!" */}
       <View style={styles.bottomArea}>
         {done ? (
           <TouchableOpacity
@@ -440,7 +477,7 @@ const styles = StyleSheet.create({
     height: ORB_SIZE,
   },
 
-  // Text
+  // Lyra's text
   textArea: {
     height: 120,
     width: width,
@@ -469,39 +506,33 @@ const styles = StyleSheet.create({
     height: 30,
   },
 
+  // User transcript
+  transcriptArea: {
+    width: width,
+    paddingHorizontal: 44,
+    paddingVertical: 12,
+  },
+  transcriptLabel: {
+    color: '#FF00DD',
+    fontSize: 12,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+    marginBottom: 4,
+    textAlign: 'center',
+  },
+  transcriptText: {
+    color: '#AAAAAA',
+    fontSize: 15,
+    lineHeight: 22,
+    textAlign: 'center',
+    fontStyle: 'italic',
+  },
+
   // Bottom
   bottomArea: {
     paddingBottom: 60,
     alignItems: 'center',
-  },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    gap: 10,
-    width: '100%',
-  },
-  textInput: {
-    flex: 1,
-    backgroundColor: '#1A1A1A',
-    borderRadius: 24,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    color: '#FFFFFF',
-    fontSize: 16,
-    borderWidth: 1,
-    borderColor: '#333333',
-  },
-  sendButton: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 24,
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-  },
-  sendButtonText: {
-    color: '#000000',
-    fontSize: 16,
-    fontWeight: '600',
   },
   micButton: {
     width: 72,

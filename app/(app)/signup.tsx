@@ -94,11 +94,12 @@ export default function SignupScreen() {
         return;
       }
 
-      // Upload the first photo if one was selected
-      let photoUrl: string | null = null;
-      const firstPhoto = photos[0];
-      if (firstPhoto) {
-        photoUrl = await uploadPhoto(firstPhoto, authUser.id);
+      // Upload all selected photos
+      const selectedPhotos = photos.filter((p): p is string => p !== null);
+      const uploadedUrls: string[] = [];
+      for (const localUri of selectedPhotos) {
+        const url = await uploadPhoto(localUri, authUser.id);
+        uploadedUrls.push(url);
       }
 
       // Map orientation label to the actual array of gender values
@@ -116,8 +117,9 @@ export default function SignupScreen() {
         show_me: showMeMap[orientation] || [],
       };
 
-      if (photoUrl) {
-        upsertData.photo_url = photoUrl;
+      if (uploadedUrls.length > 0) {
+        upsertData.photo_url = uploadedUrls[0];
+        upsertData.photo_urls = uploadedUrls;
       }
 
       const { error } = await supabase
@@ -229,7 +231,7 @@ export default function SignupScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000000' },
-  scrollContent: { paddingTop: 70, paddingBottom: 40, paddingHorizontal: 24 },
+  scrollContent: { paddingTop: 100, paddingBottom: 40, paddingHorizontal: 24 },
   heading: {
     color: '#FFFFFF',
     fontSize: 28,
