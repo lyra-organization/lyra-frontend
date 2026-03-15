@@ -40,10 +40,11 @@ export default function OnboardingScreen() {
   const [saving, setSaving] = useState(false);
   const messagesRef = useRef<Message[]>([]);
   const speechBufferRef = useRef('');
-  const finalTranscriptRef = useRef('');
-  const audioQueueRef = useRef<string[]>([]);
-  const isPlayingRef = useRef(false);
-  const currentPlayerRef = useRef<AudioPlayer | null>(null);
+  const audioQueueRef = useRef<string[]>([]);   // sentences waiting to be spoken
+  const isPlayingRef = useRef(false);            // whether audio is currently playing
+  const currentSoundRef = useRef<Audio.Sound | null>(null);
+  const streamActiveRef = useRef(false);         // true while LLM stream is producing chunks
+  const profileDetectedRef = useRef(false);      // true once <profile> tag seen in response
 
   // Configure audio to play even in silent mode
   useEffect(() => {
@@ -84,17 +85,30 @@ export default function OnboardingScreen() {
       player.addListener('playbackStatusUpdate', (status) => {
         if (status.didJustFinish) {
           isPlayingRef.current = false;
-          currentPlayerRef.current = null;
-          player.release();
-          FileSystem.deleteAsync(path, { idempotent: true });
-          playNext();
+          currentSoundRef.current = null;
+          await sound.unloadAsync();
+          await FileSystem.deleteAsync(path, { idempotent: true });
+          // Check both gates: queue drained AND stream finished
+          if (audioQueueRef.current.length > 0) {
+            playNext();
+          } else if (!streamActiveRef.current) {
+            setSpeaking(false);
+            startIdle();
+          }
+          // else: queue empty but stream still active — stay in speaking state,
+          // flushSpeechBuffer will call playNext when next sentence arrives
         }
       });
 
       player.play();
     } catch {
       isPlayingRef.current = false;
-      playNext();
+      if (audioQueueRef.current.length > 0) {
+        playNext();
+      } else if (!streamActiveRef.current) {
+        setSpeaking(false);
+        startIdle();
+      }
     }
   }, []);
 
@@ -241,11 +255,14 @@ export default function OnboardingScreen() {
     }
 
     setSpeaking(true);
+    streamActiveRef.current = true;
+    profileDetectedRef.current = false;
     startSpeaking();
     setTranscript('');
     setDisplayText('');
     animateTextIn();
     speechBufferRef.current = '';
+    pendingSentencesRef.current = '';
     stopAudio();
 
     let fullResponse = '';
@@ -254,12 +271,21 @@ export default function OnboardingScreen() {
       fullResponse = await streamInterview(
         messagesRef.current,
         (chunk) => {
+          // Detect <profile> tag — check accumulated buffer too in case tag splits across chunks
+          if (!profileDetectedRef.current) {
+            fullResponse += chunk;
+            if (fullResponse.includes('<profile>')) {
+              profileDetectedRef.current = true;
+            }
+          }
+          // Strip <profile> tags from display text
           setDisplayText((prev) => {
             const updated = prev + chunk;
             const cleaned = updated.replace(/<profile>[\s\S]*$/, '').trim();
             return cleaned;
           });
-          if (!chunk.includes('<profile>') && !fullResponse.includes('<profile>')) {
+          // Speak chunk unless profile has been detected
+          if (!profileDetectedRef.current) {
             flushSpeechBuffer(chunk);
           }
         },
@@ -280,8 +306,12 @@ export default function OnboardingScreen() {
       console.error('Interview error:', err);
       setDisplayText(err.message || 'Something went wrong. Tap to try again.');
     } finally {
-      setSpeaking(false);
-      startIdle();
+      streamActiveRef.current = false;
+      // Only go idle if audio has already drained — otherwise playNext handles it
+      if (!isPlayingRef.current && audioQueueRef.current.length === 0) {
+        setSpeaking(false);
+        startIdle();
+      }
     }
   }, [startSpeaking, startIdle, animateTextIn, flushSpeechBuffer, stopAudio]);
 
@@ -336,9 +366,9 @@ export default function OnboardingScreen() {
     };
   }, [stopAudio]);
 
-  // Start the interview on mount
+  // Start the interview on mount — seed with a greeting so Claude has at least one message
   useEffect(() => {
-    sendMessage();
+    sendMessage('Hi');
   }, []);
 
   const handleMicPress = async () => {
