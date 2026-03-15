@@ -39,11 +39,7 @@ export default function OnboardingScreen() {
   const [profile, setProfile] = useState<LyraProfile | null>(null);
   const [saving, setSaving] = useState(false);
   const messagesRef = useRef<Message[]>([]);
-  const speechBufferRef = useRef('');
-  const audioQueueRef = useRef<string[]>([]);   // sentences waiting to be spoken
-  const isPlayingRef = useRef(false);            // whether audio is currently playing
   const currentPlayerRef = useRef<AudioPlayer | null>(null);
-  const streamActiveRef = useRef(false);         // true while LLM stream is producing chunks
   const profileDetectedRef = useRef(false);      // true once <profile> tag seen in response
   const finalTranscriptRef = useRef('');
 
@@ -59,6 +55,8 @@ export default function OnboardingScreen() {
     isPlayingRef.current = true;
 
     try {
+      // Reset audio session to main speaker — speech recognition may have switched to earpiece
+      await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: false, shouldRouteThroughEarpiece: false });
       const { data: { session } } = await supabase.auth.getSession();
       const res = await fetch(
         `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/tts`,
@@ -330,8 +328,6 @@ export default function OnboardingScreen() {
 
   useSpeechRecognitionEvent('end', () => {
     setListening(false);
-    // Restore audio to main speaker — speech recognition switches iOS to PlayAndRecord/earpiece
-    setAudioModeAsync({ playsInSilentMode: true, allowsRecording: false, shouldRouteThroughEarpiece: false });
     const text = finalTranscriptRef.current.trim();
     finalTranscriptRef.current = '';
     if (!text) {
@@ -344,7 +340,6 @@ export default function OnboardingScreen() {
 
   useSpeechRecognitionEvent('error', () => {
     setListening(false);
-    setAudioModeAsync({ playsInSilentMode: true, allowsRecording: false, shouldRouteThroughEarpiece: false });
     startIdle();
   });
 
