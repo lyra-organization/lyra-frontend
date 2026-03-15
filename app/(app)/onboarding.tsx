@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
 import { createAudioPlayer, setAudioModeAsync, AudioPlayer } from 'expo-audio';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import Svg, {
   Defs,
   RadialGradient,
@@ -33,6 +33,7 @@ const ORB_SIZE = 220;
 export default function OnboardingScreen() {
   const [speaking, setSpeaking] = useState(false);
   const [listening, setListening] = useState(false);
+  const [transcript, setTranscript] = useState('');
   const [done, setDone] = useState(false);
   const [displayText, setDisplayText] = useState('');
   const [profile, setProfile] = useState<LyraProfile | null>(null);
@@ -41,9 +42,10 @@ export default function OnboardingScreen() {
   const speechBufferRef = useRef('');
   const audioQueueRef = useRef<string[]>([]);   // sentences waiting to be spoken
   const isPlayingRef = useRef(false);            // whether audio is currently playing
-  const currentSoundRef = useRef<Audio.Sound | null>(null);
+  const currentPlayerRef = useRef<AudioPlayer | null>(null);
   const streamActiveRef = useRef(false);         // true while LLM stream is producing chunks
   const profileDetectedRef = useRef(false);      // true once <profile> tag seen in response
+  const finalTranscriptRef = useRef('');
 
   // Configure audio to play even in silent mode
   useEffect(() => {
@@ -84,18 +86,15 @@ export default function OnboardingScreen() {
       player.addListener('playbackStatusUpdate', (status) => {
         if (status.didJustFinish) {
           isPlayingRef.current = false;
-          currentSoundRef.current = null;
-          await sound.unloadAsync();
-          await FileSystem.deleteAsync(path, { idempotent: true });
-          // Check both gates: queue drained AND stream finished
+          currentPlayerRef.current = null;
+          player.release();
+          FileSystem.deleteAsync(path, { idempotent: true });
           if (audioQueueRef.current.length > 0) {
             playNext();
           } else if (!streamActiveRef.current) {
             setSpeaking(false);
             startIdle();
           }
-          // else: queue empty but stream still active — stay in speaking state,
-          // flushSpeechBuffer will call playNext when next sentence arrives
         }
       });
 
@@ -375,9 +374,14 @@ export default function OnboardingScreen() {
   useSpeechRecognitionEvent('end', () => {
     setListening(false);
     stopRings();
-    if (!text) return;
-    await animateTextOut();
-    sendMessage(text);
+    const text = finalTranscriptRef.current.trim();
+    finalTranscriptRef.current = '';
+    if (!text) {
+      setTranscript('');
+      startIdle();
+      return;
+    }
+    animateTextOut().then(() => sendMessage(text));
   });
 
   useSpeechRecognitionEvent('error', () => {
