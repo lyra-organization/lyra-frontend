@@ -9,7 +9,7 @@ import {
   Alert,
 } from 'react-native';
 import { ExpoSpeechRecognitionModule, useSpeechRecognitionEvent } from 'expo-speech-recognition';
-import { Audio } from 'expo-av';
+import { createAudioPlayer, setAudioModeAsync, AudioPlayer } from 'expo-audio';
 import * as FileSystem from 'expo-file-system';
 import Svg, {
   Defs,
@@ -43,14 +43,11 @@ export default function OnboardingScreen() {
   const finalTranscriptRef = useRef('');
   const audioQueueRef = useRef<string[]>([]);
   const isPlayingRef = useRef(false);
-  const currentSoundRef = useRef<Audio.Sound | null>(null);
+  const currentPlayerRef = useRef<AudioPlayer | null>(null);
 
-  // Configure audio session once on mount
+  // Configure audio to play even in silent mode
   useEffect(() => {
-    Audio.setAudioModeAsync({
-      playsInSilentModeIOS: true,
-      allowsRecordingIOS: false,
-    });
+    setAudioModeAsync({ playsInSilentMode: true });
   }, []);
 
   // Play the next sentence in the queue via OpenAI TTS
@@ -81,21 +78,20 @@ export default function OnboardingScreen() {
         encoding: FileSystem.EncodingType.Base64,
       });
 
-      const { sound } = await Audio.Sound.createAsync({ uri: path });
-      currentSoundRef.current = sound;
+      const player = createAudioPlayer(path);
+      currentPlayerRef.current = player;
 
-      sound.setOnPlaybackStatusUpdate(async (status) => {
-        if (!status.isLoaded) return;
+      player.addListener('playbackStatusUpdate', (status) => {
         if (status.didJustFinish) {
           isPlayingRef.current = false;
-          currentSoundRef.current = null;
-          await sound.unloadAsync();
-          await FileSystem.deleteAsync(path, { idempotent: true });
+          currentPlayerRef.current = null;
+          player.release();
+          FileSystem.deleteAsync(path, { idempotent: true });
           playNext();
         }
       });
 
-      await sound.playAsync();
+      player.play();
     } catch {
       isPlayingRef.current = false;
       playNext();
@@ -106,10 +102,10 @@ export default function OnboardingScreen() {
   const stopAudio = useCallback(async () => {
     audioQueueRef.current = [];
     isPlayingRef.current = false;
-    if (currentSoundRef.current) {
-      await currentSoundRef.current.stopAsync().catch(() => {});
-      await currentSoundRef.current.unloadAsync().catch(() => {});
-      currentSoundRef.current = null;
+    if (currentPlayerRef.current) {
+      currentPlayerRef.current.pause();
+      currentPlayerRef.current.release();
+      currentPlayerRef.current = null;
     }
   }, []);
 

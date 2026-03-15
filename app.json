@@ -60,7 +60,8 @@
           "microphonePermission": "Lyra uses your microphone for the voice interview.",
           "speechRecognitionPermission": "Lyra listens to your voice to conduct the personality interview."
         }
-      ]
+      ],
+      "expo-audio"
     ],
     "experiments": {
       "typedRoutes": true
