@@ -48,9 +48,23 @@ export default function HomeScreen() {
     return cleanup;
   }, []);
 
-  // Listen for matches in real-time
+  // Listen for matches via realtime + polling fallback
   useEffect(() => {
     let channel: ReturnType<typeof supabase.channel> | null = null;
+    let pollInterval: ReturnType<typeof setInterval> | null = null;
+    let userId: string | null = null;
+    let navigated = false;
+
+    const navigateToMatch = (matchId: string, mode: 'push' | 'replace' = 'push') => {
+      if (navigated) return;
+      navigated = true;
+      if (pollInterval) clearInterval(pollInterval);
+      if (mode === 'replace') {
+        router.replace(`/(app)/radar/${matchId}` as any);
+      } else {
+        router.push(`/(app)/match/${matchId}` as any);
+      }
+    };
 
     const setup = async () => {
       const { data: { user: authUser } } = await supabase.auth.getUser();
@@ -63,59 +77,81 @@ export default function HomeScreen() {
         .single();
 
       if (!userData) return;
+      userId = userData.id;
 
+      // Realtime subscription (may not work on personal dev team without entitlements)
       channel = supabase
         .channel('matches-realtime')
-        // user_b: notified on new match (INSERT with status=pending)
         .on(
           'postgres_changes',
           {
             event: 'INSERT',
             schema: 'public',
             table: 'matches',
-            filter: `user_b=eq.${userData.id}`,
+            filter: `user_b=eq.${userId}`,
           },
-          (payload) => {
-            router.push(`/(app)/match/${payload.new.id}`);
-          },
+          (payload) => navigateToMatch(payload.new.id),
         )
-        // user_a: notified when user_b accepts (UPDATE to approved)
         .on(
           'postgres_changes',
           {
             event: 'UPDATE',
             schema: 'public',
             table: 'matches',
-            filter: `user_a=eq.${userData.id}`,
+            filter: `user_a=eq.${userId}`,
           },
           (payload) => {
             if (payload.new.status === 'approved') {
-              router.push(`/(app)/match/${payload.new.id}`);
+              navigateToMatch(payload.new.id);
             }
           },
         )
-        // user_b: notified when user_a accepts (UPDATE to confirmed) → go to radar
         .on(
           'postgres_changes',
           {
             event: 'UPDATE',
             schema: 'public',
             table: 'matches',
-            filter: `user_b=eq.${userData.id}`,
+            filter: `user_b=eq.${userId}`,
           },
           (payload) => {
             if (payload.new.status === 'confirmed') {
-              router.replace(`/(app)/radar/${payload.new.id}`);
+              navigateToMatch(payload.new.id, 'replace');
             }
           },
         )
         .subscribe();
+
+      // Polling fallback: check for new matches every 5 seconds
+      pollInterval = setInterval(async () => {
+        if (navigated || !userId) return;
+
+        const { data: matches } = await supabase
+          .from('matches')
+          .select('id, status, user_a, user_b')
+          .or(`user_a.eq.${userId},user_b.eq.${userId}`)
+          .in('status', ['pending', 'approved'])
+          .order('created_at', { ascending: false })
+          .limit(1);
+
+        if (matches && matches.length > 0) {
+          const match = matches[0];
+          if (match.user_b === userId && match.status === 'pending') {
+            // I'm user_b and there's a new pending match for me
+            navigateToMatch(match.id);
+          } else if (match.user_a === userId && match.status === 'approved') {
+            // I'm user_a and user_b accepted
+            navigateToMatch(match.id);
+          }
+        }
+      }, 5000);
     };
 
     setup();
 
     return () => {
       if (channel) supabase.removeChannel(channel);
+      if (pollInterval) clearInterval(pollInterval);
     };
   }, []);
 

@@ -56,7 +56,7 @@ async function fetchMatchProfile(matchId: string): Promise<MatchProfile> {
   // Fetch the match record
   const { data: match, error: matchError } = await supabase
     .from('matches')
-    .select('user_a, user_b')
+    .select('user_a, user_b, summary')
     .eq('id', matchId)
     .single();
 
@@ -80,7 +80,7 @@ async function fetchMatchProfile(matchId: string): Promise<MatchProfile> {
     name: userData.name || 'Someone',
     age: userData.age || 0,
     bio: profileData?.summary || '',
-    matchReason: profileData?.compatibility_notes || '',
+    matchReason: match.summary || profileData?.compatibility_notes || '',
     photo: userData.photo_url || null,
   };
 }
