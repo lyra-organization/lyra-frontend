@@ -100,7 +100,7 @@ export default function RadarScreen() {
   const startTime = useRef(Date.now());
   const myLocation = useRef<{ lat: number; lon: number } | null>(null);
   const celebrationRef = useRef(false);
-  const { push: smoothDistance } = useSmoothedDistance(5);
+  const { push: smoothDistance } = useSmoothedDistance(0.15);
 
   // Pulse ring animation
   const pulseScale = useRef(new Animated.Value(0.2)).current;
@@ -125,7 +125,7 @@ export default function RadarScreen() {
 
   // Arrow glow loop
   useEffect(() => {
-    const duration = distance > 40 ? 1200 : distance > 15 ? 600 : 300;
+    const duration = distance > 80 ? 1500 : distance > 30 ? 1000 : distance > 15 ? 500 : 250;
     const anim = Animated.loop(
       Animated.sequence([
         Animated.timing(arrowGlow, { toValue: 1, duration: duration / 2, useNativeDriver: true }),
@@ -180,7 +180,7 @@ export default function RadarScreen() {
       const bearingDeg = ((Math.atan2(y, x) * 180) / Math.PI + 360) % 360;
       setBearing(bearingDeg);
 
-      if (smoothed < 3 && !celebrationRef.current) {
+      if (smoothed < 15 && !celebrationRef.current) {
         triggerCelebration();
       }
     });
@@ -189,8 +189,10 @@ export default function RadarScreen() {
     const locationInterval = setInterval(async () => {
       try {
         const loc = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.High,
+          accuracy: Location.Accuracy.BestForNavigation,
         });
+        // Skip readings with poor accuracy (> 20m uncertainty)
+        if (loc.coords.accuracy && loc.coords.accuracy > 20) return;
         myLocation.current = { lat: loc.coords.latitude, lon: loc.coords.longitude };
         radar.sendLocation(loc.coords.latitude, loc.coords.longitude);
       } catch {
@@ -258,8 +260,22 @@ export default function RadarScreen() {
   const rx = ax - Math.sin(leftRad) * arrowWidth / 2;
   const ry = ay + Math.cos(leftRad) * arrowWidth / 2;
 
-  const distText = distance < 1 ? '< 1m' : `${Math.round(distance)}m`;
-  const color = distance > 40 ? GREEN : distance > 15 ? '#F59E0B' : '#FF00DD';
+  // Zone-based display — no raw meters at close range
+  const distText = distance > 80
+    ? `${Math.round(distance)}m`
+    : distance > 30
+      ? 'Getting closer'
+      : distance > 15
+        ? 'Very close!'
+        : 'Look around!';
+
+  const color = distance > 80
+    ? '#4466FF'      // blue — far
+    : distance > 30
+      ? GREEN          // green — getting closer
+      : distance > 15
+        ? '#F59E0B'    // amber — very close
+        : '#FF00DD';   // pink — right here
 
   return (
     <View style={styles.container}>
@@ -316,7 +332,7 @@ export default function RadarScreen() {
           <Circle cx={CENTER} cy={CENTER} r={MAX_R * 0.15} fill="url(#centerGlow)" />
           <Circle cx={CENTER} cy={CENTER} r={5} fill={color} />
 
-          {distance > 3 && (
+          {distance > 15 && (
             <Polygon
               points={`${tipX},${tipY} ${lx},${ly} ${rx},${ry}`}
               fill={color}
@@ -324,7 +340,7 @@ export default function RadarScreen() {
             />
           )}
 
-          {distance > 3 && (
+          {distance > 15 && (
             <>
               <Circle cx={dotX} cy={dotY} r={10} fill={color} fillOpacity={0.15} />
               <Circle cx={dotX} cy={dotY} r={5} fill={color} />
@@ -338,11 +354,13 @@ export default function RadarScreen() {
       </Animated.Text>
 
       <Text style={[styles.hint, { color }]}>
-        {distance > 40
+        {distance > 80
           ? 'Follow the arrow'
-          : distance > 10
-            ? 'Getting closer...'
-            : "Look around! you're almost there"}
+          : distance > 30
+            ? 'Keep walking...'
+            : distance > 15
+              ? 'Almost there!'
+              : 'Say hi!'}
       </Text>
     </View>
   );
