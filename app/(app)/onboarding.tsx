@@ -67,6 +67,7 @@ export default function OnboardingScreen() {
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${session?.access_token ?? ''}`,
+            'apikey': process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!,
           },
           body: JSON.stringify({ text: sentence }),
         },
@@ -112,7 +113,10 @@ export default function OnboardingScreen() {
     }
   }, []);
 
-  // Called on each streamed chunk — accumulate and speak sentence by sentence
+  // Called on each streamed chunk — accumulate and speak in natural phrases
+  const pendingSentencesRef = useRef('');
+  const MIN_TTS_LENGTH = 60; // min chars before sending to TTS — avoids choppy fragments
+
   const flushSpeechBuffer = useCallback((chunk: string, final = false) => {
     speechBufferRef.current += chunk;
 
@@ -122,14 +126,26 @@ export default function OnboardingScreen() {
       const sentence = buf.slice(0, match + 1).trim();
       buf = buf.slice(match + 1);
       if (sentence) {
-        audioQueueRef.current.push(sentence);
-        playNext();
+        pendingSentencesRef.current += (pendingSentencesRef.current ? ' ' : '') + sentence;
+        // Only send to TTS once we have enough text for natural-sounding speech
+        if (pendingSentencesRef.current.length >= MIN_TTS_LENGTH) {
+          audioQueueRef.current.push(pendingSentencesRef.current);
+          pendingSentencesRef.current = '';
+          playNext();
+        }
       }
     }
     speechBufferRef.current = buf;
 
-    if (final && buf.trim()) {
-      audioQueueRef.current.push(buf.trim());
+    if (final) {
+      // Flush any remaining buffer content
+      if (buf.trim()) {
+        pendingSentencesRef.current += (pendingSentencesRef.current ? ' ' : '') + buf.trim();
+      }
+      if (pendingSentencesRef.current) {
+        audioQueueRef.current.push(pendingSentencesRef.current);
+        pendingSentencesRef.current = '';
+      }
       speechBufferRef.current = '';
       playNext();
     }
