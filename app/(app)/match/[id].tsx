@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,7 @@ import {
   Animated,
   Pressable,
   Alert,
+  ActivityIndicator,
 } from 'react-native';
 import Svg, {
   Defs,
@@ -30,6 +31,50 @@ const DEMO_PROFILE = {
 };
 
 const isDemoId = (id: string) => id.startsWith('demo-');
+
+interface MatchProfile {
+  name: string;
+  age: number;
+  bio: string;
+  matchReason: string;
+  photo: string | null;
+}
+
+async function fetchMatchProfile(matchId: string): Promise<MatchProfile> {
+  const { data: { user: authUser } } = await supabase.auth.getUser();
+  if (!authUser) throw new Error('Not authenticated');
+
+  // Fetch the match record
+  const { data: match, error: matchError } = await supabase
+    .from('matches')
+    .select('user_a, user_b')
+    .eq('id', matchId)
+    .single();
+
+  if (matchError || !match) throw new Error('Match not found');
+
+  // Determine the other user
+  const otherUserId = match.user_a === authUser.id ? match.user_b : match.user_a;
+
+  // Fetch user data and profile data in parallel
+  const [userResult, profileResult] = await Promise.all([
+    supabase.from('users').select('name, age, photo_url').eq('auth_id', otherUserId).single(),
+    supabase.from('profiles').select('summary, compatibility_notes').eq('auth_id', otherUserId).single(),
+  ]);
+
+  if (userResult.error || !userResult.data) throw new Error('User not found');
+
+  const userData = userResult.data;
+  const profileData = profileResult.data;
+
+  return {
+    name: userData.name || 'Someone',
+    age: userData.age || 0,
+    bio: profileData?.summary || '',
+    matchReason: profileData?.compatibility_notes || '',
+    photo: userData.photo_url || null,
+  };
+}
 
 async function respondToMatch(matchId: string, action: 'accept' | 'pass'): Promise<{ status: string }> {
   const { data: { session } } = await supabase.auth.getSession();
@@ -56,10 +101,29 @@ async function respondToMatch(matchId: string, action: 'accept' | 'pass'): Promi
 export default function MatchScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const [acting, setActing] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [profile, setProfile] = useState<MatchProfile>(DEMO_PROFILE);
 
   // Gradient glow intensities
   const pinkGlow = useRef(new Animated.Value(0.12)).current;
   const grayGlow = useRef(new Animated.Value(0.12)).current;
+
+  useEffect(() => {
+    if (!id || isDemoId(id)) {
+      setProfile(DEMO_PROFILE);
+      setLoading(false);
+      return;
+    }
+
+    fetchMatchProfile(id)
+      .then(setProfile)
+      .catch((err) => {
+        console.warn('Failed to fetch match profile:', err.message);
+        // Fall back to demo profile so the screen isn't broken
+        setProfile(DEMO_PROFILE);
+      })
+      .finally(() => setLoading(false));
+  }, [id]);
 
   const handleMeet = async () => {
     if (acting) return;
@@ -71,10 +135,8 @@ export default function MatchScreen() {
       }
       const result = await respondToMatch(id!, 'accept');
       if (result.status === 'confirmed') {
-        // Both accepted — go to radar
         router.replace(`/(app)/radar/${id}`);
       } else {
-        // approved — waiting for the other person
         Alert.alert('Nice!', "They'll be notified. Hang tight!");
         router.back();
       }
@@ -121,6 +183,16 @@ export default function MatchScreen() {
     ]).start();
   };
 
+  if (loading) {
+    return (
+      <View style={[styles.container, styles.loadingContainer]}>
+        <ActivityIndicator size="large" color="#FF00DD" />
+      </View>
+    );
+  }
+
+  const initials = profile.name.charAt(0).toUpperCase();
+
   return (
     <View style={styles.container}>
       {/* Left edge gradient — gray */}
@@ -154,18 +226,26 @@ export default function MatchScreen() {
         <Text style={styles.header}>Someone compatible is near!</Text>
 
         <View style={styles.photoContainer}>
-          <Image source={{ uri: DEMO_PROFILE.photo }} style={styles.photo} />
+          {profile.photo ? (
+            <Image source={{ uri: profile.photo }} style={styles.photo} />
+          ) : (
+            <View style={[styles.photo, styles.initialsContainer]}>
+              <Text style={styles.initialsText}>{initials}</Text>
+            </View>
+          )}
         </View>
 
         <Text style={styles.name}>
-          {DEMO_PROFILE.name}, {DEMO_PROFILE.age}
+          {profile.name}{profile.age ? `, ${profile.age}` : ''}
         </Text>
-        <Text style={styles.bio}>{DEMO_PROFILE.bio}</Text>
+        {profile.bio ? <Text style={styles.bio}>{profile.bio}</Text> : null}
 
-        <View style={styles.reasonBox}>
-          <Text style={styles.reasonLabel}>Lyra thinks you're a match because...</Text>
-          <Text style={styles.reasonText}>{DEMO_PROFILE.matchReason}</Text>
-        </View>
+        {profile.matchReason ? (
+          <View style={styles.reasonBox}>
+            <Text style={styles.reasonLabel}>Lyra thinks you're a match because...</Text>
+            <Text style={styles.reasonText}>{profile.matchReason}</Text>
+          </View>
+        ) : null}
       </View>
 
       {/* Actions */}
@@ -198,6 +278,10 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#000000',
+  },
+  loadingContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   edgeGradient: {
     position: 'absolute',
@@ -233,6 +317,16 @@ const styles = StyleSheet.create({
     height: 210,
     borderRadius: 105,
     backgroundColor: '#111111',
+  },
+  initialsContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#1A1A1A',
+  },
+  initialsText: {
+    color: '#555555',
+    fontSize: 64,
+    fontWeight: '700',
   },
   name: {
     color: '#FFFFFF',

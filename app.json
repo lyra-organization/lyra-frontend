@@ -22,7 +22,6 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
-      "expo-apple-authentication",
       [
         "expo-location",
         {
@@ -36,6 +35,12 @@
         "expo-notifications",
         {
           "sounds": []
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Lyra needs access to your photos so you can add pictures to your profile."
         }
       ]
     ],

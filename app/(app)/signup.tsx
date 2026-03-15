@@ -9,8 +9,11 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
+  Image,
+  ActivityIndicator,
 } from 'react-native';
 import { router } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../../lib/supabase';
 
 const GENDER_OPTIONS = [
@@ -30,17 +33,73 @@ export default function SignupScreen() {
   const [age, setAge] = useState('');
   const [gender, setGender] = useState('');           // stores the value, e.g. 'man'
   const [orientation, setOrientation] = useState('');   // stores the label, e.g. 'Everyone'
+  const [photos, setPhotos] = useState<(string | null)[]>([null, null, null, null]);
   const [saving, setSaving] = useState(false);
 
   const canContinue = name.trim() && age && gender && orientation;
+
+  const pickPhoto = async (index: number) => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission needed', 'Please allow access to your photo library in Settings.');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [3, 4],
+      quality: 0.7,
+    });
+
+    if (result.canceled || !result.assets[0]) return;
+
+    const updated = [...photos];
+    updated[index] = result.assets[0].uri;
+    setPhotos(updated);
+  };
+
+  const uploadPhoto = async (localUri: string, authId: string): Promise<string> => {
+    const ext = localUri.split('.').pop() || 'jpg';
+    const fileName = `${Date.now()}.${ext}`;
+    const filePath = `photos/${authId}/${fileName}`;
+
+    // Read the file as blob
+    const response = await fetch(localUri);
+    const blob = await response.blob();
+    const arrayBuffer = await new Response(blob).arrayBuffer();
+
+    const { error } = await supabase.storage
+      .from('avatars')
+      .upload(filePath, arrayBuffer, {
+        contentType: `image/${ext === 'png' ? 'png' : 'jpeg'}`,
+        upsert: false,
+      });
+
+    if (error) throw error;
+
+    const { data } = supabase.storage.from('avatars').getPublicUrl(filePath);
+    return data.publicUrl;
+  };
 
   const handleConfirm = async () => {
     if (!canContinue || saving) return;
     setSaving(true);
 
     try {
-      const { data: { user: authUser } } = await supabase.auth.getUser();
-      if (!authUser) throw new Error('Not authenticated');
+      const { data: { user: authUser }, error: authError } = await supabase.auth.getUser();
+      if (authError || !authUser) {
+        await supabase.auth.signOut();
+        router.replace('/(auth)/login');
+        return;
+      }
+
+      // Upload the first photo if one was selected
+      let photoUrl: string | null = null;
+      const firstPhoto = photos[0];
+      if (firstPhoto) {
+        photoUrl = await uploadPhoto(firstPhoto, authUser.id);
+      }
 
       // Map orientation label to the actual array of gender values
       const showMeMap: Record<string, string[]> = {
@@ -49,15 +108,21 @@ export default function SignupScreen() {
         'Women': ['woman'],
       };
 
+      const upsertData: Record<string, any> = {
+        auth_id: authUser.id,
+        name: name.trim(),
+        age: parseInt(age, 10),
+        gender: [gender],
+        show_me: showMeMap[orientation] || [],
+      };
+
+      if (photoUrl) {
+        upsertData.photo_url = photoUrl;
+      }
+
       const { error } = await supabase
         .from('users')
-        .upsert({
-          auth_id: authUser.id,
-          name: name.trim(),
-          age: parseInt(age, 10),
-          gender: [gender],                      // wrap in array, e.g. ['man']
-          show_me: showMeMap[orientation] || [],  // e.g. ['man', 'woman', 'nonbinary']
-        }, { onConflict: 'auth_id' });
+        .upsert(upsertData, { onConflict: 'auth_id' });
 
       if (error) throw error;
 
@@ -83,10 +148,14 @@ export default function SignupScreen() {
 
         {/* Photo upload — 4 vertical rectangles */}
         <View style={styles.photoRow}>
-          {[0, 1, 2, 3].map((i) => (
-            <View key={i} style={styles.photoSlot}>
-              {i === 0 && <Text style={styles.photoPlus}>+</Text>}
-            </View>
+          {photos.map((uri, i) => (
+            <TouchableOpacity key={i} style={styles.photoSlot} onPress={() => pickPhoto(i)} activeOpacity={0.7}>
+              {uri ? (
+                <Image source={{ uri }} style={styles.photoImage} />
+              ) : (
+                <Text style={styles.photoPlus}>+</Text>
+              )}
+            </TouchableOpacity>
           ))}
         </View>
         <Text style={styles.photoHint}>Add photos that best represent you</Text>
@@ -147,7 +216,11 @@ export default function SignupScreen() {
           onPress={handleConfirm}
           disabled={!canContinue || saving}
         >
-          <Text style={styles.confirmText}>{saving ? 'Saving...' : 'Confirm'}</Text>
+          {saving ? (
+            <ActivityIndicator color="#000000" />
+          ) : (
+            <Text style={styles.confirmText}>Confirm</Text>
+          )}
         </TouchableOpacity>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -178,6 +251,12 @@ const styles = StyleSheet.create({
     borderColor: '#222222',
     justifyContent: 'center',
     alignItems: 'center',
+    overflow: 'hidden',
+  },
+  photoImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 11,
   },
   photoPlus: {
     color: '#555555',
