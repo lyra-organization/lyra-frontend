@@ -1,133 +1,135 @@
-# Lyra - Frontend
+# Human — Frontend
 
-Proximity-based dating app. No swiping — an AI interviews users to build personality profiles, then notifies them when a compatible match is physically nearby. One approves, the other opens a live GPS radar, and they walk toward each other.
+Proximity-based dating app where an AI conversation builds your personality profile, then notifies you when a compatible person is physically nearby. A live GPS radar guides you toward each other for a face-to-face meeting.
 
-## User Flow
+## Stack
 
-```
-Login (Apple Sign-In) → Profile Setup → Onboarding (AI Interview) → Home → Match Profile → Proximity Radar
-```
+- **Runtime:** Expo SDK 55, React Native 0.83.2, React 19, TypeScript (strict)
+- **Routing:** expo-router (file-based, typed routes)
+- **Backend:** Supabase JS v2.49.1 (pinned — newer versions crash on React Native)
+- **Auth storage:** expo-secure-store (iOS Keychain, `AFTER_FIRST_UNLOCK` for background access)
+- **Location:** expo-location (foreground + background GPS), expo-task-manager
+- **Proximity:** expo-nearby-connections (Bluetooth/WiFi peer discovery)
+- **Voice:** expo-speech-recognition (speech-to-text)
+- **Audio:** expo-audio (TTS playback)
+- **Push:** expo-notifications (Expo Push Service)
+- **UI:** react-native-svg (radar, orb animations), expo-haptics
 
-1. **Login** — "Lyra / Find your person" → Continue with Apple (real Apple Sign-In via Supabase Auth)
-2. **Profile Setup** — Photo slots, name, age, gender, "Want to meet" preferences → saved to `users` table
-3. **Onboarding** — Animated glowing orb (Lyra) streams AI interview via `/interview` edge function. Detects `<profile>` tag when done, saves profile + personality embedding to `profiles` table
-4. **Home** — Blue breathing orb, "Looking for someone compatible near you". Background GPS tracking starts, push notifications registered. Real-time match listener active. Tap 5x for demo mode.
-5. **Match Profile** — Circular photo, bio, Lyra's match reasoning. Pink/gray edge gradients that glow on button hold. "Let's not" / "Let's meet!"
-6. **Proximity Radar** — Real GPS via Supabase Broadcast channel, Haversine distance, bearing calculation. Falls back to demo simulation for demo IDs. Confetti + haptics on arrival.
-
-## Screens
-
-| Screen | Route | Description |
-|--------|-------|-------------|
-| Login | `/(auth)/login` | Apple Sign-In → creates auth session + `users` row |
-| Profile Setup | `/(app)/signup` | Name, age, gender, orientation → saved to `users` table |
-| Onboarding | `/(app)/onboarding` | AI interview with streaming SSE, profile parsing, embedding |
-| Home | `/(app)/home` | Blue orb + GPS tracking + push registration + match listener |
-| Match Profile | `/(app)/match/[id]` | Profile reveal with interactive edge gradients |
-| Proximity Radar | `/(app)/radar/[id]` | Live GPS radar via Broadcast channel, or demo simulation |
-
-## How Matching Works
-
-The match flow is **sequential** — both users must accept one at a time:
+## Architecture
 
 ```
-Trigger creates match (status: pending)
-  → user_b gets push notification + realtime alert
-  → user_b sees profile, taps "Let's meet!" or "Let's not"
-     → calls /respond-match Edge Function
-     → if accept: status → approved, user_a gets notified
-     → if pass: status → rejected, done
-
-  → user_a gets push notification + realtime alert
-  → user_a sees profile, taps "Let's meet!" or "Let's not"
-     → calls /respond-match Edge Function
-     → if accept: status → confirmed, both go to radar
-     → if pass: status → rejected, done
-
-  → Radar: both users walk toward each other
-  → At < 3m: celebration, status → met
+Phone (Expo) <-> Supabase (DB + Edge Functions) <-> AI Services (Claude, OpenAI)
 ```
 
-All match actions go through the `/respond-match` Edge Function (service role) — the frontend never writes directly to `matches` or `interactions`.
+The app operates in three phases:
 
-## Backend Integration
-
-| Feature | Frontend file | Backend endpoint |
-|---------|--------------|-----------------|
-| Auth | `lib/supabase.ts`, `login.tsx` | Supabase Auth (Apple Sign-In) |
-| AI Interview | `lib/interview.ts` | `/interview` Edge Function (Claude) |
-| Profile save | `lib/embedding.ts` | `/embed` Edge Function (OpenAI + DB write) |
-| Match actions | `match/[id].tsx` | `/respond-match` Edge Function |
-| Background GPS | `lib/location.ts` | Direct write to `locations` table |
-| Push notifications | `lib/notifications.ts` | `/send-push` Edge Function (webhook) |
-| Live radar | `lib/radar.ts` | Supabase Broadcast channel |
-
-## Demo Mode
-
-From the home screen, **tap anywhere 5 times** to trigger demo mode:
-1. After 3 seconds, Sam's profile appears
-2. Hold "Let's meet!" (pink glow) or "Let's not" (gray glow)
-3. Radar screen: compass arrow + distance counts down 88m → 0m over 25 seconds
-4. At < 3m: confetti burst from bottom + haptic vibration
-
-## Tech Stack
-
-- Expo SDK 55 + TypeScript
-- expo-router v5 (file-based routing)
-- Supabase (auth, database, edge functions, realtime)
-- React Native SVG (radar, orb gradients, compass arrow, edge gradients)
-- React Native Animated API (orb breathing, confetti particles, text transitions)
-- expo-location + expo-task-manager (background GPS)
-- expo-notifications (push notifications)
-- expo-apple-authentication + expo-crypto (Apple Sign-In)
-- expo-secure-store (token persistence)
-- expo-haptics (celebration vibration)
-
-## Setup
-
-```bash
-# Install dependencies
-npm install
-
-# Create .env from template
-cp .env.example .env
-# Fill in your Supabase URL and anon key
-
-# Run in Expo Go
-npx expo start --ios
-```
-
-## Environment Variables
-
-```
-EXPO_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-EXPO_PUBLIC_SUPABASE_ANON_KEY=your-anon-key-here
-```
+1. **Onboarding** — AI voice interview produces a structured personality profile stored as 8 x 512-dim vectors
+2. **Waiting** — Background GPS uploads location every 30s; the backend auto-matches compatible nearby users
+3. **Meeting** — Both users see each other's profile, approve the meeting, then navigate via a real-time radar
 
 ## Project Structure
 
 ```
-app/
-├── _layout.tsx              # Root layout with auth state listener
-├── index.tsx                # Entry → redirects based on auth state
-├── (auth)/
-│   ├── _layout.tsx
-│   └── login.tsx            # Apple Sign-In
-├── (app)/
-│   ├── _layout.tsx
-│   ├── onboarding.tsx       # AI interview with streaming
-│   ├── signup.tsx           # Profile setup → saves to users table
-│   ├── home.tsx             # Blue orb + GPS + push + match listener
-│   ├── match/[id].tsx       # Match profile with edge gradients
-│   └── radar/[id].tsx       # Live GPS radar or demo simulation
-lib/
-├── supabase.ts              # Supabase client with SecureStore
-├── interview.ts             # SSE streaming from /interview edge function
-├── profileParser.ts         # <profile> tag detection + JSON parsing
-├── embedding.ts             # Calls /embed Edge Function (profile + vectors saved server-side)
-├── location.ts              # Background GPS tracking
-├── notifications.ts         # Push notification registration
-└── radar.ts                 # Broadcast channel + Haversine distance
-hooks/
-└── useSmoothedDistance.ts    # Moving average for radar distance
+lyra-frontend/
+├── app/                        # Screens (expo-router file-based routing)
+│   ├── _layout.tsx             # Root layout — auth guard, session listener
+│   ├── index.tsx               # Smart router — redirects based on profile state
+│   ├── (auth)/
+│   │   └── login.tsx           # Email-based login/signup
+│   └── (app)/
+│       ├── signup.tsx          # Profile setup (name, age, gender, photos)
+│       ├── onboarding.tsx      # AI voice interview screen
+│       ├── home.tsx            # Waiting screen with match listener
+│       ├── match/[id].tsx      # Match reveal — profile + approve/pass
+│       └── radar/[id].tsx      # Live proximity radar with haptics
+├── lib/
+│   ├── supabase.ts             # Supabase client with SecureStore adapter
+│   ├── interview.ts            # SSE streaming to /interview edge function
+│   ├── embedding.ts            # Calls /embed edge function to save profile
+│   ├── profileParser.ts        # Parses <profile> JSON tags from AI response
+│   ├── location.ts             # Background GPS task + location tracking
+│   ├── notifications.ts        # Push token registration + notification routing
+│   └── radar.ts                # Supabase Broadcast channel + haversine math
+├── hooks/
+│   └── useSmoothedDistance.ts  # Exponential moving average for GPS jitter
+├── app.json                    # Expo config, permissions, plugins
+├── tsconfig.json               # Strict mode, @/* path alias
+└── package.json
 ```
+
+## Screens
+
+| Route | Screen | Purpose |
+|---|---|---|
+| `/` | Smart Router | Checks auth, user, profile — redirects accordingly |
+| `/(auth)/login` | Login | Email-based auth |
+| `/(app)/signup` | Profile Setup | Name, age, gender, orientation, up to 4 photos |
+| `/(app)/onboarding` | AI Interview | Voice conversation with Claude via TTS/STT |
+| `/(app)/home` | Waiting | Breathing orb, background GPS, match listener |
+| `/(app)/match/[id]` | Match Reveal | Photo carousel, AI summary, approve or pass |
+| `/(app)/radar/[id]` | Radar | Live GPS radar with directional cone + haptics |
+
+## Key Flows
+
+### Auth Flow
+
+1. `_layout.tsx` checks session on mount and listens for auth state changes
+2. Smart router (`index.tsx`) queries `users` and `profiles` tables to determine destination
+3. Tokens persist in iOS Keychain with `AFTER_FIRST_UNLOCK` so background tasks can access them
+
+### Interview Flow
+
+1. User taps mic — `expo-speech-recognition` captures speech (non-continuous mode for fast response)
+2. Transcript is sent to `/interview` edge function which streams Claude's response as SSE
+3. Response chunks are batched into sentences (>=60 chars) and sent to `/tts` for audio playback
+4. When Claude emits a `<profile>` tag, the profile JSON is parsed and the "That's me!" button appears
+5. Profile is saved via `/embed` edge function (generates 8 x 512-dim vectors server-side)
+
+### Match Detection
+
+Two mechanisms run concurrently on the home screen:
+- **Supabase Realtime** — postgres_changes subscription on `matches` table
+- **Polling fallback** — 5-second interval query for pending/approved matches
+
+### Radar Flow
+
+1. Both users subscribe to the same Supabase Broadcast channel (`radar:{matchId}`)
+2. GPS updates at 1-second intervals are broadcast to the peer (>20m accuracy readings filtered out)
+3. Distance is smoothed with an EMA (alpha=0.2) to reduce GPS jitter
+4. Bearing is computed via forward azimuth and rendered as a directional SVG cone
+5. `expo-nearby-connections` detects Bluetooth/WiFi proximity (~30m) as a secondary trigger
+6. At <15m (or BLE peer found), celebration triggers with triple haptic feedback and confetti
+
+### Radar Color Zones
+
+| Distance | Color | Label |
+|---|---|---|
+| >80m | Blue `#4466FF` | Distance in meters |
+| 30-80m | Green `#22C55E` | "Getting closer" |
+| 15-30m | Amber `#F59E0B` | "Very close!" |
+| <15m | Pink `#FF00DD` | "You found them!" |
+
+## Environment Variables
+
+Create `.env.local` in the project root:
+
+```
+EXPO_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+EXPO_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+```
+
+## Setup
+
+```bash
+npm install
+npx expo start
+```
+
+iOS only — `platforms` is set to `["ios"]` in `app.json`.
+
+## Notable Details
+
+- **Demo mode:** 5 taps on the home screen triggers a fake match flow with hardcoded profile data
+- **Audio session reset:** After speech recognition, the audio mode is reconfigured before TTS playback to prevent volume drop (iOS switches to earpiece during recording)
+- **Background location:** Uses a separate Supabase client with `autoRefreshToken: false` to avoid token refresh issues in background tasks
+- **Supabase JS pinned to v2.49.1** — newer versions crash on React Native
