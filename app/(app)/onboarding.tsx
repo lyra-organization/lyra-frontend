@@ -9,6 +9,7 @@ import {
   Alert,
 } from 'react-native';
 import Voice from '@react-native-voice/voice';
+import * as Speech from 'expo-speech';
 import Svg, {
   Defs,
   RadialGradient,
@@ -37,6 +38,36 @@ export default function OnboardingScreen() {
   const [profile, setProfile] = useState<LyraProfile | null>(null);
   const [saving, setSaving] = useState(false);
   const messagesRef = useRef<Message[]>([]);
+  const speechBufferRef = useRef('');
+
+  // Speak a sentence immediately, queuing behind any in-progress speech
+  const speakChunk = useCallback((text: string) => {
+    const cleaned = text.trim();
+    if (!cleaned) return;
+    Speech.speak(cleaned, { language: 'en-US', _isQueued: true } as any);
+  }, []);
+
+  // Called on each streamed chunk — accumulate and speak sentence by sentence
+  const flushSpeechBuffer = useCallback((chunk: string, final = false) => {
+    speechBufferRef.current += chunk;
+    const sentenceEnd = /[.!?]/;
+
+    let buf = speechBufferRef.current;
+    let match;
+    // Keep pulling out complete sentences and speaking them
+    while ((match = buf.search(sentenceEnd)) !== -1) {
+      const sentence = buf.slice(0, match + 1);
+      buf = buf.slice(match + 1);
+      speakChunk(sentence);
+    }
+    speechBufferRef.current = buf;
+
+    // On final chunk, speak whatever's left in the buffer
+    if (final && buf.trim()) {
+      speakChunk(buf);
+      speechBufferRef.current = '';
+    }
+  }, [speakChunk]);
 
   // Text fade
   const textOpacity = useRef(new Animated.Value(0)).current;
@@ -129,6 +160,7 @@ export default function OnboardingScreen() {
 
     return () => {
       Voice.destroy().then(Voice.removeAllListeners);
+      Speech.stop();
     };
   }, [startListeningAnim, startIdle, animateTextOut, sendMessage]);
 
@@ -160,6 +192,8 @@ export default function OnboardingScreen() {
     startSpeaking();
     setDisplayText('');
     animateTextIn();
+    speechBufferRef.current = '';
+    Speech.stop();
 
     let fullResponse = '';
 
@@ -173,8 +207,14 @@ export default function OnboardingScreen() {
             const cleaned = updated.replace(/<profile>[\s\S]*$/, '').trim();
             return cleaned;
           });
+          // Speak chunk unless it's inside a <profile> block
+          if (!chunk.includes('<profile>') && !fullResponse.includes('<profile>')) {
+            flushSpeechBuffer(chunk);
+          }
         },
       );
+      // Flush any remaining buffer after stream ends
+      flushSpeechBuffer('', true);
 
       messagesRef.current.push({ role: 'assistant', content: fullResponse });
 
@@ -208,6 +248,10 @@ export default function OnboardingScreen() {
       await Voice.stop();
       return;
     }
+
+    // Stop Lyra mid-sentence if still talking
+    Speech.stop();
+    speechBufferRef.current = '';
 
     try {
       await Voice.start('en-US');
